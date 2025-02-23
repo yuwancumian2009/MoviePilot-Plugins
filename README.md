@@ -16,3 +16,8 @@ MoviePilot官方插件市场：https://github.com/jxxghp/MoviePilot-Plugins
 - 
 - ![](images/2.png)
 - ![](images/4.png)
+
+### 3. 群聊区
+- 
+- ![](images/5.png)
+- ![](images/6.png)
