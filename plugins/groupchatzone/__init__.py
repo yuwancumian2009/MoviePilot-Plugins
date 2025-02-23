@@ -28,7 +28,7 @@ class GroupChatZone(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/GroupChat.png"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.2"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -420,6 +420,39 @@ class GroupChatZone(_PluginBase):
             site_msgs = self.parse_site_messages(self._sites_messages)
             self.__send_msgs(do_sites=self._chat_sites, site_msgs=site_msgs, event=event)
 
+    def parse_site_messages(self, site_messages: str) -> Dict[str, List[str]]:
+        """
+        解析输入的站点消息
+        :param site_messages: 多行文本输入
+        :return: 字典，键为站点名称，值为该站点的消息
+        """
+        result = {}
+        try:
+            # 获取所有选中的站点名称
+            all_sites = [site for site in self.sites.get_indexers() if not site.get("public")] + self.__custom_sites()
+            selected_site_names = {site.get("name") for site in all_sites if site.get("id") in self._chat_sites}
+            logger.info(f"获取到的选中站点名称列表: {selected_site_names}")
+
+            # 按行分割配置
+            for line in site_messages.strip().splitlines():
+                parts = line.split("|")
+                if len(parts) > 1:
+                    site_name = parts[0].strip()
+                    if site_name in selected_site_names:
+                        messages = [msg.strip() for msg in parts[1:] if msg.strip()]
+                        if messages:
+                            result[site_name] = messages
+                        else:
+                            logger.warn(f"站点 {site_name} 没有有效的消息内容")
+                    else:
+                        logger.warn(f"站点 {site_name} 不在选中列表中")
+                else:
+                    logger.warn(f"配置行格式错误，缺少分隔符: {line}")
+        except Exception as e:
+            logger.error(f"解析站点消息时出现异常: {str(e)}")
+        logger.info(f"站点消息解析完成，解析结果: {result}")
+        return result
+
     def __send_msgs(self, do_sites: list, site_msgs: Dict[str, List[str]], event: Event = None):
         """
         发送消息逻辑
@@ -427,10 +460,7 @@ class GroupChatZone(_PluginBase):
         # 查询所有站点
         all_sites = [site for site in self.sites.get_indexers() if not site.get("public")] + self.__custom_sites()
         # 过滤掉没有选中的站点
-        if do_sites:
-            do_sites = [site for site in all_sites if site.get("id") in do_sites]
-        else:
-            do_sites = all_sites
+        do_sites = [site for site in all_sites if site.get("id") in do_sites] if do_sites else all_sites
 
         if not do_sites:
             logger.info("没有需要发送消息的站点")
@@ -446,7 +476,7 @@ class GroupChatZone(_PluginBase):
             failure_count = 0
             for i, message in enumerate(messages):
                 try:
-                    self.send_msg_to_site(site, message)
+                    self.send_message_to_site(site, message)
                     success_count += 1
                 except Exception as e:
                     logger.error(f"向站点 {site_name} 发送消息 '{message}' 失败: {str(e)}")
@@ -460,11 +490,11 @@ class GroupChatZone(_PluginBase):
         if self._notify:
             total_sites = len(do_sites)
             notification_text = f"全部站点数量: {total_sites}\n"
-
-            for site_name, (success_count, failure_count) in site_results.items():
-                notification_text += f"【{site_name}】成功发送{success_count}条信息，失败{failure_count}条\n"
-
-            notification_text += time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))
+            notification_text += "\n".join(
+                f"【{site_name}】成功发送{success_count}条信息，失败{failure_count}条"
+                for site_name, (success_count, failure_count) in site_results.items()
+            )
+            notification_text += f"\n{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}"
 
             self.post_message(
                 mtype=NotificationType.SiteMessage,
@@ -472,19 +502,30 @@ class GroupChatZone(_PluginBase):
                 text=notification_text
             )
 
+        # 检查是否所有消息都发送成功
+        all_successful = all(success_count == len(messages) for success_count, messages in zip(
+            (success_count for success_count, _ in site_results.values()),
+            (messages for _, messages in site_msgs.items())
+        ))
+
+        if all_successful:
+            logger.info("所有站点的消息发送成功")
+
         self.__update_config()
 
-    def send_msg_to_site(self, site_info: CommentedMap, message: str):
+    def send_message_to_site(self, site_info: CommentedMap, message: str):
         """
-        解析站点信息，构建消息发送请求
+        发送消息到指定站点
+        :param site_info: 站点信息
+        :param message: 要发送的消息
         """
-        # 站点信息
-        site_name = site_info.get("name") 
+        site_name = site_info.get("name")
         site_url = site_info.get("url")
         site_cookie = site_info.get("cookie")
         ua = site_info.get("ua")
         proxies = settings.PROXY if site_info.get("proxy") else None
-        if not site_name or not site_url or not site_cookie or not ua:
+
+        if not all([site_name, site_url, site_cookie, ua]):
             logger.error(f"站点 {site_name} 缺少必要信息，无法发送消息")
             return
 
@@ -493,57 +534,26 @@ class GroupChatZone(_PluginBase):
             'User-Agent': ua,
             'Cookie': site_cookie,
             'Referer': site_url
-            }
+        }
         params = {
             'shbox_text': message,
             'shout': '我喊',
             'sent': 'yes',
             'type': 'shoutbox'
-            }
+        }
 
-        response = requests.get(send_url, params=params, headers=headers, proxies=proxies)
-        if response and response.status_code == 200:
-            logger.info(f"向 {site_info.get('name')} 发送消息 '{message}' 成功")
-        else:
-            logger.warn(f"向 {site_info.get('name')} 发送消息 '{message}' 失败，状态码：{response.status_code if response else '无响应'}")
-
-    def parse_site_messages(self, site_messages: str) -> Dict[str, List[str]]:
-        """
-        解析输入的站点消息
-        :param site_messages: 多行文本输入
-        :return: 字典，键为站点名称，值为该站点的消息
-        """
-        result = {}
         try:
-            # 获取所有选中的站点名称
-            all_sites = [site for site in self.sites.get_indexers() if not site.get("public")] + self.__custom_sites()
-            selected_site_names = [site.get("name") for site in all_sites if site.get("id") in self._chat_sites]
-            logger.info(f"获取到的选中站点名称列表: {selected_site_names}")
-
-            # 按行分割配置
-            lines = site_messages.strip().splitlines()  # 使用 splitlines() 来处理多行字符串
-            for line in lines:
-                parts = line.split("|")
-                if len(parts) > 1:
-                    site_name = parts[0].strip()
-                    logger.debug(f"解析出的站点名称: {site_name}")
-                    # 检查站点是否在选中列表中
-                    if site_name in selected_site_names:
-                        # 获取消息内容并去除前后空格
-                        messages = [msg.strip() for msg in parts[1:] if msg.strip()]
-                        if messages:  # 如果有有效消息才添加
-                            result[site_name] = messages
-                            logger.info(f"成功解析站点 {site_name} 的消息: {messages}")
-                        else:
-                            logger.warn(f"站点 {site_name} 没有有效的消息内容")
-                    else:
-                        logger.warn(f"站点 {site_name} 不在选中列表中")
-                else:
-                    logger.warn(f"配置行格式错误，缺少分隔符: {line}")
-        except Exception as e:
-            logger.error(f"解析站点消息时出现异常: {str(e)}")
-        logger.info(f"站点消息解析完成，解析结果: {result}")
-        return result
+            response = requests.get(send_url, params=params, headers=headers, proxies=proxies, timeout=10)
+            if response.status_code == 200:
+                logger.info(f"向 {site_name} 发送消息 '{message}' 成功")
+            else:
+                logger.warn(f"向 {site_name} 发送消息 '{message}' 失败，状态码：{response.status_code}")
+        except requests.Timeout:
+            logger.error(f"向 {site_name} 发送消息 '{message}' 超时")
+        except requests.ConnectionError:
+            logger.error(f"向 {site_name} 发送消息 '{message}' 连接错误")
+        except requests.RequestException as e:
+            logger.error(f"向 {site_name} 发送消息 '{message}' 失败，请求异常: {str(e)}")
 
     def stop_service(self):
         """
