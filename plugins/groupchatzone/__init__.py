@@ -4,6 +4,8 @@ import requests
 from datetime import datetime, timedelta
 from typing import Any, List, Dict, Tuple, Optional
 from urllib.parse import urljoin
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -28,7 +30,7 @@ class GroupChatZone(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/GroupChat.png"
     # 插件版本
-    plugin_version = "1.2"
+    plugin_version = "1.2.1"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -75,9 +77,9 @@ class GroupChatZone(_PluginBase):
             self._cron = config.get("cron")
             self._onlyonce = config.get("onlyonce")
             self._notify = config.get("notify")
-            self._interval_cnt = config.get("interval_cnt") or 2
-            self._chat_sites = config.get("chat_sites") or []
-            self._sites_messages = config.get("sites_messages") or ""
+            self._interval_cnt = config.get("interval_cnt", 2)
+            self._chat_sites = config.get("chat_sites", [])
+            self._sites_messages = config.get("sites_messages", "")
 
 
             # 过滤掉已删除的站点
@@ -356,9 +358,33 @@ class GroupChatZone(_PluginBase):
                                         'props': {
                                             'model': 'sites_messages',
                                             'label': '发送消息',
-                                            'rows': 10,
+                                            'rows': 8,
                                             'placeholder': '每一行一个配置，配置方式：\n'
                                                            '站点名称|消息内容1|消息内容2|消息内容3|...\n'
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VAlert',
+                                        'props': {
+                                            'type': 'info',
+                                            'variant': 'tonal',
+                                            'text': '配置注意事项：'
+                                                    '1、注意定时任务设置，避免每分钟执行一次导致频繁请求。'
+                                                    '2、消息发送执行间隔(秒)不能小于0，也不建议设置过大。1~5秒即可，设置过大可能导致线程运行时间过长。'
+                                                    '3、如配置有全局代理，会默认调用全局代理执行。'
                                         }
                                     }
                                 ]
@@ -474,6 +500,8 @@ class GroupChatZone(_PluginBase):
             messages = site_msgs.get(site_name, [])
             success_count = 0
             failure_count = 0
+            failed_messages = []
+
             for i, message in enumerate(messages):
                 try:
                     self.send_message_to_site(site, message)
@@ -481,19 +509,28 @@ class GroupChatZone(_PluginBase):
                 except Exception as e:
                     logger.error(f"向站点 {site_name} 发送消息 '{message}' 失败: {str(e)}")
                     failure_count += 1
+                    failed_messages.append(message)
                 if i < len(messages) - 1:
                     logger.info(f"等待 {self._interval_cnt} 秒...")
                     time.sleep(self._interval_cnt)
-            site_results[site_name] = (success_count, failure_count)
+            
+            site_results[site_name] = {
+                "success_count": success_count,
+                "failure_count": failure_count,
+                "failed_messages": failed_messages
+            }
 
         # 发送通知
         if self._notify:
             total_sites = len(do_sites)
             notification_text = f"全部站点数量: {total_sites}\n"
-            notification_text += "\n".join(
-                f"【{site_name}】成功发送{success_count}条信息，失败{failure_count}条"
-                for site_name, (success_count, failure_count) in site_results.items()
-            )
+            for site_name, result in site_results.items():
+                success_count = result["success_count"]
+                failure_count = result["failure_count"]
+                failed_messages = result["failed_messages"]
+                notification_text += f"【{site_name}】成功发送{success_count}条信息，失败{failure_count}条\n"
+                if failed_messages:
+                    notification_text += f"失败的消息: {', '.join(failed_messages)}\n"
             notification_text += f"\n{time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}"
 
             self.post_message(
@@ -503,26 +540,19 @@ class GroupChatZone(_PluginBase):
             )
 
         # 检查是否所有消息都发送成功
-        all_successful = all(success_count == len(messages) for success_count, messages in zip(
-            (success_count for success_count, _ in site_results.values()),
-            (messages for _, messages in site_msgs.items())
-        ))
-
+        all_successful = all(result["success_count"] == len(messages) for site_name, messages in site_msgs.items() if (result := site_results.get(site_name)))
         if all_successful:
-            logger.info("所有站点的消息发送成功")
+            logger.info("所有站点的消息发送成功。")
+        else:
+            logger.info("部分消息发送失败！！！")
 
         self.__update_config()
 
     def send_message_to_site(self, site_info: CommentedMap, message: str):
-        """
-        发送消息到指定站点
-        :param site_info: 站点信息
-        :param message: 要发送的消息
-        """
-        site_name = site_info.get("name")
-        site_url = site_info.get("url")
-        site_cookie = site_info.get("cookie")
-        ua = site_info.get("ua")
+        site_name = site_info.get("name", "").strip()
+        site_url = site_info.get("url", "").strip()
+        site_cookie = site_info.get("cookie", "").strip()
+        ua = site_info.get("ua", "").strip()
         proxies = settings.PROXY if site_info.get("proxy") else None
 
         if not all([site_name, site_url, site_cookie, ua]):
@@ -542,18 +572,41 @@ class GroupChatZone(_PluginBase):
             'type': 'shoutbox'
         }
 
-        try:
-            response = requests.get(send_url, params=params, headers=headers, proxies=proxies, timeout=10)
-            if response.status_code == 200:
-                logger.info(f"向 {site_name} 发送消息 '{message}' 成功")
-            else:
-                logger.warn(f"向 {site_name} 发送消息 '{message}' 失败，状态码：{response.status_code}")
-        except requests.Timeout:
-            logger.error(f"向 {site_name} 发送消息 '{message}' 超时")
-        except requests.ConnectionError:
-            logger.error(f"向 {site_name} 发送消息 '{message}' 连接错误")
-        except requests.RequestException as e:
-            logger.error(f"向 {site_name} 发送消息 '{message}' 失败，请求异常: {str(e)}")
+        # 配置重试策略
+        retries = Retry(
+            total=3,  # 总重试次数
+            backoff_factor=1,  # 重试间隔时间因子
+            status_forcelist=[403, 404, 500, 502, 503, 504],  # 需要重试的状态码
+            allowed_methods=["GET"],  # 需要重试的HTTP方法
+            raise_on_status=False  # 不在重试时抛出异常，手动处理
+        )
+        adapter = HTTPAdapter(max_retries=retries)
+
+        # 使用 Session 对象复用，创建会话对象
+        with requests.Session() as session:
+            session.headers.update(headers)
+            session.proxies = proxies
+            session.mount('https://', adapter)
+            
+            attempt = 0
+            while attempt < retries.total:
+                try:
+                    response = session.get(send_url, params=params, timeout=(3.05, 10))
+                    response.raise_for_status()  # 自动处理 4xx/5xx 状态码
+                    logger.info(f"向 {site_name} 发送消息 '{message}' 成功")
+                    break
+                except requests.exceptions.HTTPError as http_err:
+                    logger.error(f"向 {site_name} 发送消息 '{message}' 失败，HTTP 错误: {http_err}")
+                except requests.exceptions.RequestException as req_err:
+                    logger.error(f"向 {site_name} 发送消息 '{message}' 失败，请求异常: {req_err}")
+                
+                attempt += 1
+                if attempt < retries.total:
+                    backoff_time = retries.get_backoff_time(attempt)
+                    logger.info(f"重试 {attempt}/{retries.total}，将在 {backoff_time} 秒后重试...")
+                    time.sleep(backoff_time)
+                else:
+                    logger.error(f"向 {site_name} 发送消息 '{message}' 失败，重试次数已达上限")
 
     def stop_service(self):
         """
