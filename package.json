@@ -46,5 +46,18 @@
         "v1.1": "优化代码结构，避免逻辑重复。",
         "v1.0": "初始版本。"
     }
-}
+  },
+  "ZhuqueHelper": {
+      "name": "朱雀助手",
+      "description": "技能释放、一键升级、获取执行记录。",
+      "labels": "站点",
+      "version": "1.0",
+      "icon": "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png",
+      "author": "KoWming",
+      "level": 2,
+      "v2": true,
+      "history": {
+          "v1.0": "初始版本。"
+      }
+  }
 }
