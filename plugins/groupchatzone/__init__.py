@@ -30,7 +30,7 @@ class GroupChatZone(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/GroupChat.png"
     # 插件版本
-    plugin_version = "1.2.2"
+    plugin_version = "1.2.3"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -48,6 +48,7 @@ class GroupChatZone(_PluginBase):
     sitechain: SiteChain = None
     # 事件管理器
     event: EventManager = None
+
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
 
@@ -147,13 +148,74 @@ class GroupChatZone(_PluginBase):
         }]
         """
         if self._enabled and self._cron:
-            return [{
-                "id": "GroupChatZone",
-                "name": "站点喊话服务",
-                "trigger": CronTrigger.from_crontab(self._cron),
-                "func": self.send_site_messages,
-                "kwargs": {}
-            }]
+            try:
+                if str(self._cron).strip().count(" ") == 4:
+                    return [{
+                        "id": "GroupChatZone",
+                        "name": "站点喊话服务",
+                        "trigger": CronTrigger.from_crontab(self._cron),
+                        "func": self.send_site_messages,
+                        "kwargs": {}
+                    }]
+                else:
+                    # 2.3/9-23
+                    crons = str(self._cron).strip().split("/")
+                    if len(crons) == 2:
+                        # 2.3
+                        cron = crons[0]
+                        # 9-23
+                        times = crons[1].split("-")
+                        if len(times) == 2:
+                            # 9
+                            self._start_time = int(times[0])
+                            # 23
+                            self._end_time = int(times[1])
+                        if self._start_time and self._end_time:
+                            return [{
+                                "id": "GroupChatZone",
+                                "name": "站点喊话服务",
+                                "trigger": "interval",
+                                "func": self.send_site_messages,
+                                "kwargs": {
+                                    "hours": float(str(cron).strip()),
+                                }
+                            }]
+                        else:
+                            logger.error("站点喊话服务启动失败，周期格式错误")
+                    else:
+                        # 默认0-24 按照周期运行
+                        return [{
+                            "id": "GroupChatZone",
+                            "name": "站点喊话服务",
+                            "trigger": "interval",
+                            "func": self.send_site_messages,
+                            "kwargs": {
+                                "hours": float(str(self._cron).strip()),
+                            }
+                        }]
+            except Exception as err:
+                logger.error(f"定时任务配置错误：{str(err)}")
+        elif self._enabled:
+            # 随机时间
+            triggers = TimerUtils.random_scheduler(num_executions=1,
+                                                   begin_hour=9,
+                                                   end_hour=23,
+                                                   max_interval=6 * 60,
+                                                   min_interval=2 * 60)
+            ret_jobs = []
+            for trigger in triggers:
+                ret_jobs.append({
+                    "id": f"GroupChatZone|{trigger.hour}:{trigger.minute}",
+                    "name": "站点喊话服务",
+                    "trigger": "cron",
+                    "func": self.send_site_messages,
+                    "kwargs": {
+                        "hour": trigger.hour,
+                        "minute": trigger.minute
+                    }
+                })
+            return ret_jobs
+        return []
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """
@@ -329,6 +391,30 @@ class GroupChatZone(_PluginBase):
                                 ]
                             }
                         ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VAlert',
+                                        'props': {
+                                            'type': 'info',
+                                            'variant': 'tonal',
+                                            'text': '执行周期支持：'
+                                                    '1、5位cron表达式；'
+                                                    '2、配置间隔（小时），如2.3/9-23（9-23点之间每隔2.3小时执行一次）；'
+                                                    '3、周期不填默认9-23点随机执行1次。'
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
                     }
                 ]
             }
@@ -352,7 +438,6 @@ class GroupChatZone(_PluginBase):
     def get_page(self) -> List[dict]:
         pass
 
-    @eventmanager.register(EventType.PluginAction)
     def send_site_messages(self, event: Event = None):
         """
         自动向站点发送消息
