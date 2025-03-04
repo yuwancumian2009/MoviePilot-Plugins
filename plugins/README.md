@@ -30,11 +30,11 @@
 > #### 4. Proxmox Virtual Environment
 >> POST:`http://moviepilot_ip:port/api/v1/plugin/MsgNotify/send_json?apikey=api_token`
 >> - 正文：
->> ```
+        ```
         {
         "title":"{{ title }}",
         "text":"{{ severity }}\n{{ escape message }}"
         }
->> ```
+        ```
 >> - POST:
 >> - ![](images/5.png)
