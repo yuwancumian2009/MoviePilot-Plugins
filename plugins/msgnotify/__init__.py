@@ -18,7 +18,7 @@ class MsgNotify(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/MsgNotify.png"
     # 插件版本
-    plugin_version = "1.3.1"
+    plugin_version = "1.3.2"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -283,6 +283,24 @@ class MsgNotify(_PluginBase):
                                                     {
                                                         'component': 'span',
                                                         'text': '必要参数或请求体可用变量请根据你使用的第三方应用要求填写！'
+                                                    },
+                                                    {
+                                                        'component': 'span',
+                                                        'text': '使用示列：'
+                                                    },
+                                                    {
+                                                        'component': 'a',
+                                                        'props': {
+                                                            'href': 'https://github.com/KoWming/MoviePilot-Plugins/blob/main/plugins/README.md',
+                                                            'target': '_blank',
+                                                            'style': 'text-decoration: underline;'
+                                                        },
+                                                        'content': [
+                                                            {
+                                                                'component': 'u',
+                                                                'text': 'README.md'
+                                                            }
+                                                        ]
                                                     }
                                                 ]
                                             }
