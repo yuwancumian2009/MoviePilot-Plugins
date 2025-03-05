@@ -1,6 +1,7 @@
 import pytz
 import time
 import requests
+import threading
 from datetime import datetime, timedelta
 from typing import Any, List, Dict, Tuple, Optional
 from urllib.parse import urljoin
@@ -13,14 +14,13 @@ from ruamel.yaml import CommentedMap
 
 from app.chain.site import SiteChain
 from app.core.config import settings
-from app.core.event import EventManager, eventmanager, Event
+from app.core.event import eventmanager
 from app.db.site_oper import SiteOper
 from app.helper.sites import SitesHelper
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas.types import EventType, NotificationType
 from app.utils.timer import TimerUtils
-
 
 class GroupChatZone(_PluginBase):
     # 插件名称
@@ -30,7 +30,7 @@ class GroupChatZone(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/GroupChat.png"
     # 插件版本
-    plugin_version = "1.2.3"
+    plugin_version = "1.2.4"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -46,9 +46,7 @@ class GroupChatZone(_PluginBase):
     sites: SitesHelper = None
     siteoper: SiteOper = None
     sitechain: SiteChain = None
-    # 事件管理器
-    event: EventManager = None
-
+    
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
 
@@ -62,11 +60,13 @@ class GroupChatZone(_PluginBase):
     _sites_messages: list = []
     _start_time: int = None
     _end_time: int = None
+    _lock = None
+    _running = False
 
     def init_plugin(self, config: dict = None):
+        self._lock = threading.Lock()
         self.sites = SitesHelper()
         self.siteoper = SiteOper()
-        self.event = EventManager()
         self.sitechain = SiteChain()
 
         # 停止现有任务
@@ -78,7 +78,7 @@ class GroupChatZone(_PluginBase):
             self._cron = config.get("cron")
             self._onlyonce = config.get("onlyonce")
             self._notify = config.get("notify")
-            self._interval_cnt = config.get("interval_cnt", 2)
+            self._interval_cnt = int(config.get("interval_cnt", 2))
             self._chat_sites = config.get("chat_sites", [])
             self._sites_messages = config.get("sites_messages", "")
 
@@ -383,8 +383,8 @@ class GroupChatZone(_PluginBase):
                                             'type': 'info',
                                             'variant': 'tonal',
                                             'text': '配置注意事项：'
-                                                    '1、注意定时任务设置，避免每分钟执行一次导致频繁请求。'
-                                                    '2、消息发送执行间隔(秒)不能小于0，也不建议设置过大。1~5秒即可，设置过大可能导致线程运行时间过长。'
+                                                    '1、注意定时任务设置，避免每分钟执行一次导致频繁请求；'
+                                                    '2、消息发送执行间隔(秒)不能小于0，也不建议设置过大。1~5秒即可，设置过大可能导致线程运行时间过长；'
                                                     '3、如配置有全局代理，会默认调用全局代理执行。'
                                         }
                                     }
@@ -438,13 +438,23 @@ class GroupChatZone(_PluginBase):
     def get_page(self) -> List[dict]:
         pass
 
-    def send_site_messages(self, event: Event = None):
+    def send_site_messages(self):
         """
         自动向站点发送消息
         """
-        if self._chat_sites:
-            site_msgs = self.parse_site_messages(self._sites_messages)
-            self.__send_msgs(do_sites=self._chat_sites, site_msgs=site_msgs, event=event)
+        if not self._lock.acquire(blocking=False):
+            logger.warning("已有任务正在执行，本次调度跳过！")
+            return
+            
+        try:
+            self._running = True
+            if self._chat_sites:
+                site_msgs = self.parse_site_messages(self._sites_messages)
+                self.__send_msgs(do_sites=self._chat_sites, site_msgs=site_msgs)
+        finally:
+            self._running = False
+            self._lock.release()
+            logger.debug("任务执行完成，锁已释放")
 
     def parse_site_messages(self, site_messages: str) -> Dict[str, List[str]]:
         """
@@ -479,7 +489,7 @@ class GroupChatZone(_PluginBase):
         logger.info(f"站点消息解析完成，解析结果: {result}")
         return result
 
-    def __send_msgs(self, do_sites: list, site_msgs: Dict[str, List[str]], event: Event = None):
+    def __send_msgs(self, do_sites: list, site_msgs: Dict[str, List[str]]):
         """
         发送消息逻辑
         """
@@ -489,7 +499,7 @@ class GroupChatZone(_PluginBase):
         do_sites = [site for site in all_sites if site.get("id") in do_sites] if do_sites else all_sites
 
         if not do_sites:
-            logger.info("没有需要发送消息的站点")
+            logger.info("没有需要发送消息的站点！")
             return
 
         # 执行站点发送消息
@@ -498,6 +508,12 @@ class GroupChatZone(_PluginBase):
             site_name = site.get("name")
             logger.info(f"开始处理站点: {site_name}")
             messages = site_msgs.get(site_name, [])
+
+            # 添加消息列表空值检查
+            if not messages:
+                logger.warning(f"站点 {site_name} 没有需要发送的消息！")
+                continue
+
             success_count = 0
             failure_count = 0
             failed_messages = []
@@ -510,9 +526,12 @@ class GroupChatZone(_PluginBase):
                     logger.error(f"向站点 {site_name} 发送消息 '{message}' 失败: {str(e)}")
                     failure_count += 1
                     failed_messages.append(message)
+                # 修改间隔判断逻辑
                 if i < len(messages) - 1:
-                    logger.info(f"等待 {self._interval_cnt} 秒...")
+                    logger.info(f"等待 {self._interval_cnt} 秒后继续发送下一条消息...")
+                    start_time = time.time()
                     time.sleep(self._interval_cnt)
+                    logger.debug(f"实际等待时间：{time.time() - start_time:.2f} 秒")
             
             site_results[site_name] = {
                 "success_count": success_count,
@@ -549,6 +568,12 @@ class GroupChatZone(_PluginBase):
         self.__update_config()
 
     def send_message_to_site(self, site_info: CommentedMap, message: str):
+
+        if not site_info:
+            logger.error("无效的站点信息！")
+            return
+
+        # 站点信息
         site_name = site_info.get("name", "").strip()
         site_url = site_info.get("url", "").strip()
         site_cookie = site_info.get("cookie", "").strip()
@@ -556,7 +581,7 @@ class GroupChatZone(_PluginBase):
         proxies = settings.PROXY if site_info.get("proxy") else None
 
         if not all([site_name, site_url, site_cookie, ua]):
-            logger.error(f"站点 {site_name} 缺少必要信息，无法发送消息")
+            logger.error(f"站点 {site_name} 缺少必要信息，无法发送消息！")
             return
 
         send_url = urljoin(site_url, "/shoutbox.php")
@@ -609,17 +634,19 @@ class GroupChatZone(_PluginBase):
                     logger.error(f"向 {site_name} 发送消息 '{message}' 失败，重试次数已达上限")
 
     def stop_service(self):
-        """
-        退出插件
-        """
+        """退出插件"""
         try:
             if self._scheduler:
+                if self._lock.locked():
+                    logger.info("等待当前任务执行完成...")
+                    self._lock.acquire()
+                    self._lock.release()
                 self._scheduler.remove_all_jobs()
                 if self._scheduler.running:
                     self._scheduler.shutdown()
                 self._scheduler = None
         except Exception as e:
-            logger.error("退出插件失败：%s" % str(e))
+            logger.error(f"退出插件失败：{str(e)}")
 
     @eventmanager.register(EventType.SiteDeleted)
     def site_deleted(self, event):
