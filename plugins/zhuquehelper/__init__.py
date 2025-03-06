@@ -1,6 +1,6 @@
-import json
 import re
 import time
+import requests
 from datetime import datetime, timedelta
 
 import pytz
@@ -23,7 +23,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.1"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -172,10 +172,10 @@ class ZhuqueHelper(_PluginBase):
                 history = [record for record in history if
                         datetime.strptime(record["date"], '%Y-%m-%d %H:%M:%S').timestamp() >= thirty_days_ago]
 
-            except RequestUtils.exceptions.RequestException as e:
+            except requests.exceptions.RequestException as e:
                 logger.error(f"请求用户信息时发生异常: {e}，响应内容：{res.text if 'res' in locals() else '无响应'}")
 
-        except RequestUtils.exceptions.RequestException as e:
+        except requests.exceptions.RequestException as e:
             logger.error(f"请求首页时发生异常: {e}")
 
     def get_user_info(self, headers):
@@ -190,7 +190,7 @@ class ZhuqueHelper(_PluginBase):
             bonus = data['bonus']
             min_level = min(char['info']['level'] for char in data['characters'])
             return bonus, min_level
-        except RequestUtils.exceptions.RequestException as e:
+        except requests.exceptions.RequestException as e:
             logger.error(f"获取用户信息失败: {e}，响应内容：{response.content if 'response' in locals() else '无响应'}")
             return None, None
 
@@ -212,7 +212,7 @@ class ZhuqueHelper(_PluginBase):
                     'status': '成功',
                     'bonus': bonus
                 }
-            except RequestUtils.exceptions.RequestException as e:
+            except requests.exceptions.RequestException as e:
                 results['skill_release'] = {'status': '失败', 'error': '访问错误'}
 
         # 一键升级
@@ -226,7 +226,7 @@ class ZhuqueHelper(_PluginBase):
                 response = RequestUtils(headers=headers).post_res(url=url, json=data)
                 response.raise_for_status()
                 results['level_up'] = {'status': '成功'}
-            except RequestUtils.exceptions.RequestException as e:
+            except requests.exceptions.RequestException as e:
                 if response.status_code == 400:
                     results['level_up'] = {'status': '成功', 'error': '灵石不足'}
                 else:
@@ -362,7 +362,7 @@ class ZhuqueHelper(_PluginBase):
                                         'component': 'VSwitch',
                                         'props': {
                                             'model': 'skill_release',
-                                            'label': '批量释放',
+                                            'label': '技能释放',
                                         }
                                     }
                                 ]
