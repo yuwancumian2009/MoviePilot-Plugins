@@ -37,12 +37,16 @@
     "name": "群聊区",
     "description": "定时向多个站点发送预设消息(特定站点可获得奖励)。",
     "labels": "站点",
-    "version": "1.2.4",
+    "version": "1.2.8",
     "icon": "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins-test/main/icons/GroupChat.png",
     "author": "KoWming",
     "level": 2,
     "v2": true,
     "history": {
+        "v1.2.8": "添加定时任务检测逻辑避免频繁发送请求给站点造成压力。",
+        "v1.2.7": "使用站点缓存减少数据库查询次数。",
+        "v1.2.6": "统一站点查询逻辑、请求逻辑，优化请求性能",
+        "v1.2.5": "优化代码结构，避免逻辑重复，移除冗余代码。",
         "v1.2.4": "添加锁机制，尝试优化消息发送卡住的问题。",
         "v1.2.3": "移除事件管理器，修复定时任务逻辑。",
         "v1.2.1": "使用Session对象复用优化性能减少TCP握手次数，添加重试机制，其他优化。",
@@ -55,12 +59,13 @@
       "name": "朱雀助手",
       "description": "技能释放、一键升级、获取执行记录。",
       "labels": "站点",
-      "version": "1.1",
+      "version": "1.2",
       "icon": "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png",
       "author": "KoWming",
       "level": 2,
       "v2": true,
       "history": {
+          "v1.2": "优化代码结构。",
           "v1.1": "修复一个代码错误。",
           "v1.0": "初始版本。"
       }
