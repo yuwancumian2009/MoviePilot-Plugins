@@ -2,6 +2,7 @@ import re
 import time
 import requests
 from datetime import datetime, timedelta
+from typing import Any, List, Dict, Tuple, Optional, Union, cast
 
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -9,7 +10,6 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.core.config import settings
 from app.plugins import _PluginBase
-from typing import Any, List, Dict, Tuple, Optional
 from app.log import logger
 from app.schemas import NotificationType
 from app.utils.http import RequestUtils
@@ -23,7 +23,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.1"
+    plugin_version = "1.2"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -36,60 +36,70 @@ class ZhuqueHelper(_PluginBase):
     auth_level = 2
 
     # 私有属性
-    _enabled = False
+    _enabled: bool = False
     # 任务执行间隔
-    _cron = None
-    _cookie = None
-    _onlyonce = False
-    _notify = False
-    _history_days = None
-    _level_up = None
-    _skill_release = None
-    _target_level = None
+    _cron: Optional[str] = None
+    _cookie: Optional[str] = None
+    _onlyonce: bool = False
+    _notify: bool = False
+    _history_days: Optional[int] = None
+    _level_up: Optional[bool] = None
+    _skill_release: Optional[bool] = None
+    _target_level: Optional[int] = None
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
 
-    def init_plugin(self, config: dict = None):
+    def init_plugin(self, config: Optional[dict] = None) -> None:
+        """
+        初始化插件
+        """
         # 停止现有任务
         self.stop_service()
 
         if config:
-            self._enabled = config.get("enabled")
+            self._enabled = config.get("enabled", False)
             self._cron = config.get("cron")
             self._cookie = config.get("cookie")
-            self._notify = config.get("notify")
-            self._onlyonce = config.get("onlyonce")
-            self._history_days = config.get("history_days", 15)
-            self._level_up = config.get("level_up")
-            self._skill_release = config.get("skill_release")
-            self._target_level = config.get("target_level", 79)
+            self._notify = config.get("notify", False)
+            self._onlyonce = config.get("onlyonce", False)
+            self._history_days = int(config.get("history_days", 15))
+            self._level_up = config.get("level_up", False)
+            self._skill_release = config.get("skill_release", False)
+            self._target_level = int(config.get("target_level", 79))
 
         if self._onlyonce:
-            # 定时服务
-            self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-            logger.info(f"朱雀助手服务启动，立即运行一次")
-            self._scheduler.add_job(func=self.__signin, trigger='date',
-                                    run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
-                                    name="朱雀助手")
-            # 关闭一次性开关
-            self._onlyonce = False
-            self.update_config({
-                "onlyonce": False,
-                "cron": self._cron,
-                "enabled": self._enabled,
-                "cookie": self._cookie,
-                "notify": self._notify,
-                "history_days": self._history_days,
-                "level_up": self._level_up,
-                "skill_release": self._skill_release,
-                "target_level": self._target_level,
-            })
+            try:
+                # 定时服务
+                self._scheduler = BackgroundScheduler(timezone=settings.TZ)
+                logger.info("朱雀助手服务启动，立即运行一次")
+                if self._scheduler:
+                    self._scheduler.add_job(
+                        func=self.__signin, 
+                        trigger='date',
+                        run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
+                        name="朱雀助手"
+                    )
+                    # 关闭一次性开关
+                    self._onlyonce = False
+                    self.update_config({
+                        "onlyonce": False,
+                        "cron": self._cron,
+                        "enabled": self._enabled,
+                        "cookie": self._cookie,
+                        "notify": self._notify,
+                        "history_days": self._history_days,
+                        "level_up": self._level_up,
+                        "skill_release": self._skill_release,
+                        "target_level": self._target_level,
+                    })
 
-            # 启动任务
-            if self._scheduler.get_jobs():
-                self._scheduler.print_jobs()
-                self._scheduler.start()
+                    # 启动任务
+                    if self._scheduler.get_jobs():
+                        self._scheduler.print_jobs()
+                        self._scheduler.start()
+            except Exception as e:
+                logger.error(f"朱雀助手服务启动失败: {str(e)}")
 
     def __signin(self):
         """
@@ -233,22 +243,25 @@ class ZhuqueHelper(_PluginBase):
                     results['level_up'] = {'status': '失败', 'error': '网络错误'}
         return results
 
-    def generate_rich_text_report(self, results, bonus, min_level):
+    def generate_rich_text_report(self, results: Dict[str, Any], bonus: int, min_level: int) -> str:
         """生成报告"""
         try:
             report = "🌟 朱雀助手 🌟\n"
             report += f"技能释放：{'✅ ' if self._skill_release else '❌ '}\n"
             if 'skill_release' in results:
                 if results['skill_release']['status'] == '成功':
-                    report += f"成功，本次释放获得 {results['skill_release']['bonus']} 灵石 💎\n"
+                    report += f"成功，本次释放获得 {results['skill_release'].get('bonus', 0)} 灵石 💎\n"
                 else:
-                    report += f"失败，{results['skill_release']['error']} ❗️\n"
+                    report += f"失败，{results['skill_release'].get('error', '未知错误')} ❗️\n"
             report += f"一键升级：{'✅' if self._level_up else '❌'}\n"
             if 'level_up' in results:
                 if results['level_up']['status'] == '成功':
-                    report += f"升级成功 🎉\n"
+                    if 'error' in results['level_up']:
+                        report += f"升级受限，{results['level_up']['error']} ⚠️\n"
+                    else:
+                        report += f"升级成功 🎉\n"
                 else:
-                    report += f"失败，{results['level_up']['error']} ❗️\n"
+                    report += f"失败，{results['level_up'].get('error', '未知错误')} ❗️\n"
             report += f"当前角色最低等级：{min_level} \n"
             report += f"当前账户灵石余额：{bonus} 💎\n"
             return report
@@ -257,25 +270,21 @@ class ZhuqueHelper(_PluginBase):
             return "🌟 朱雀助手 🌟\n生成报告时发生错误，请检查日志以获取更多信息。"
 
     def get_state(self) -> bool:
-        return self._enabled
+        """获取插件状态"""
+        return bool(self._enabled)
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
+        """获取命令"""
         pass
 
     def get_api(self) -> List[Dict[str, Any]]:
+        """获取API"""
         pass
 
     def get_service(self) -> List[Dict[str, Any]]:
         """
         注册插件公共服务
-        [{
-            "id": "服务ID",
-            "name": "服务名称",
-            "trigger": "触发器：cron/interval/date/CronTrigger.from_crontab()",
-            "func": self.xxx,
-            "kwargs": {} # 定时器参数
-        }]
         """
         if self._enabled and self._cron:
             return [{
@@ -623,7 +632,7 @@ class ZhuqueHelper(_PluginBase):
             }
         ]
 
-    def stop_service(self):
+    def stop_service(self) -> None:
         """
         退出插件
         """
