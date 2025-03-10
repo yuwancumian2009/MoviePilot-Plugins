@@ -7,6 +7,7 @@ from typing import Any, List, Dict, Tuple, Optional
 from urllib.parse import urljoin
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
+from cachetools import TTLCache, cached
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -30,7 +31,7 @@ class GroupChatZone(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/GroupChat.png"
     # 插件版本
-    plugin_version = "1.2.4"
+    plugin_version = "1.2.8"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -56,66 +57,147 @@ class GroupChatZone(_PluginBase):
     _onlyonce: bool = False
     _notify: bool = False
     _interval_cnt: int = 2
-    _chat_sites: list = []
-    _sites_messages: list = []
-    _start_time: int = None
-    _end_time: int = None
-    _lock = None
-    _running = False
+    _chat_sites: List[str] = []
+    _sites_messages: str = ""
+    _start_time: Optional[int] = None
+    _end_time: Optional[int] = None
+    _lock: Optional[threading.Lock] = None
+    _running: bool = False
+    
+    # 缓存设置
+    _cache_ttl: int = 3600  # 缓存过期时间（秒）
+    _site_cache: Optional[TTLCache] = None
+    _cache_initialized: bool = False
 
-    def init_plugin(self, config: dict = None):
+    def init_plugin(self, config: Optional[dict] = None):
         self._lock = threading.Lock()
         self.sites = SitesHelper()
         self.siteoper = SiteOper()
         self.sitechain = SiteChain()
+        
+        # 初始化缓存
+        self._site_cache = TTLCache(maxsize=1, ttl=self._cache_ttl)
+        self._cache_initialized = False
 
         # 停止现有任务
         self.stop_service()
 
-        # 配置
         if config:
-            self._enabled = config.get("enabled")
-            self._cron = config.get("cron")
-            self._onlyonce = config.get("onlyonce")
-            self._notify = config.get("notify")
+            self._enabled = bool(config.get("enabled", False))
+            self._cron = str(config.get("cron", ""))
+            self._onlyonce = bool(config.get("onlyonce", False))
+            self._notify = bool(config.get("notify", False))
             self._interval_cnt = int(config.get("interval_cnt", 2))
             self._chat_sites = config.get("chat_sites", [])
-            self._sites_messages = config.get("sites_messages", "")
+            self._sites_messages = str(config.get("sites_messages", ""))
 
+            # 过滤掉已删除的站点 - 只获取一次站点列表
+            all_site_ids = self.__get_all_site_ids(log_update=False)
+            self._chat_sites = [site_id for site_id in self._chat_sites if site_id in all_site_ids]
 
-            # 过滤掉已删除的站点
-            all_sites = [site.id for site in self.siteoper.list_order_by_pri()] + [site.get("id") for site in self.__custom_sites()]
-            self._chat_sites = [site_id for site_id in all_sites if site_id in self._chat_sites]
-
-            # 保存配置
-            self.__update_config()
+            # 保存配置，不主动刷新缓存
+            self.__update_config(refresh_cache=False)
 
         # 加载模块
         if self._enabled or self._onlyonce:
 
             # 立即运行一次
             if self._onlyonce:
-                # 定时服务
-                self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-                logger.info("站点喊话服务启动，立即运行一次")
-                self._scheduler.add_job(func=self.send_site_messages, trigger='date',
-                                        run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
-                                        name="站点喊话服务")
+                try:
+                    # 定时服务
+                    self._scheduler = BackgroundScheduler(timezone=settings.TZ)
+                    logger.info("站点喊话服务启动，立即运行一次")
+                    self._scheduler.add_job(func=self.send_site_messages, trigger='date',
+                                            run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
+                                            name="站点喊话服务")
 
-                # 关闭一次性开关
-                self._onlyonce = False
-                # 保存配置
-                self.__update_config()
+                    # 关闭一次性开关
+                    self._onlyonce = False
+                    # 保存配置
+                    self.__update_config(refresh_cache=False)
 
-                # 启动任务
-                if self._scheduler.get_jobs():
-                    self._scheduler.print_jobs()
-                    self._scheduler.start()
+                    # 启动任务
+                    if self._scheduler and self._scheduler.get_jobs():
+                        self._scheduler.print_jobs()
+                        self._scheduler.start()
+                except Exception as e:
+                    logger.error(f"启动一次性任务失败: {str(e)}")
+
+    def __get_site_info(self, refresh=False, log_update=True):
+        """
+        获取站点信息并创建映射，支持缓存
+        :param refresh: 是否强制刷新缓存
+        :param log_update: 是否记录更新日志
+        :return: 包含站点信息和映射的字典
+        """
+        # 如果需要强制刷新缓存，则清空缓存
+        if refresh and self._site_cache:
+            self._site_cache.clear()
+            self._cache_initialized = False
+            
+        if not self._cache_initialized or not self._site_cache:
+            try:
+                # 获取所有站点信息
+                all_sites = [site for site in self.sites.get_indexers() if not site.get("public")] + self.__custom_sites()
+                
+                # 创建映射
+                site_id_to_name = {site.get("id"): site.get("name") for site in all_sites}
+                site_id_to_obj = {site.get("id"): site for site in all_sites}
+                site_name_to_obj = {site.get("name"): site for site in all_sites}
+                all_site_ids = list(site_id_to_name.keys())
+                
+                # 更新缓存
+                site_info = {
+                    "all_sites": all_sites,
+                    "site_id_to_name": site_id_to_name,
+                    "site_id_to_obj": site_id_to_obj,
+                    "site_name_to_obj": site_name_to_obj,
+                    "all_site_ids": all_site_ids
+                }
+                
+                # 存入缓存
+                self._site_cache["site_info"] = site_info
+                self._cache_initialized = True
+                
+                if log_update:
+                    logger.debug(f"站点信息缓存已更新，共 {len(all_sites)} 个站点")
+                    
+                return site_info
+            except Exception as e:
+                logger.error(f"获取站点信息失败: {str(e)}")
+                # 如果获取失败，返回空结构
+                empty_info = {
+                    "all_sites": [],
+                    "site_id_to_name": {},
+                    "site_id_to_obj": {},
+                    "site_name_to_obj": {},
+                    "all_site_ids": []
+                }
+                return empty_info
+        
+        # 从缓存中获取站点信息
+        return self._site_cache.get("site_info", {})
+
+    def __get_all_site_ids(self, log_update=True) -> List[str]:
+        """
+        获取所有站点ID（内置站点 + 自定义站点）
+        :param log_update: 是否记录更新日志
+        :return: 站点ID列表
+        """
+        site_info = self.__get_site_info(log_update=log_update)
+        return site_info["all_site_ids"]
 
     def get_state(self) -> bool:
         return self._enabled
 
-    def __update_config(self):
+    def __update_config(self, refresh_cache=True):
+        """
+        更新配置
+        :param refresh_cache: 是否刷新站点缓存
+        """
+        if refresh_cache:
+            self.__get_site_info(refresh=True, log_update=True)
+        
         # 保存配置
         self.update_config(
             {
@@ -149,7 +231,18 @@ class GroupChatZone(_PluginBase):
         """
         if self._enabled and self._cron:
             try:
+                # 检查是否为5位cron表达式
                 if str(self._cron).strip().count(" ") == 4:
+                    # 解析cron表达式
+                    cron_parts = str(self._cron).strip().split()
+                    
+                    # 检查是否为每分钟执行一次 (分钟位为 * 或 */1)
+                    if cron_parts[0] == "*" or cron_parts[0] == "*/1":
+                        logger.warning("检测到每分钟执行一次的配置，已自动调整为默认随机执行")
+                        # 使用随机调度
+                        return self.__get_random_schedule()
+                    
+                    # 正常的cron表达式
                     return [{
                         "id": "GroupChatZone",
                         "name": "站点喊话服务",
@@ -171,63 +264,89 @@ class GroupChatZone(_PluginBase):
                             # 23
                             self._end_time = int(times[1])
                         if self._start_time and self._end_time:
+                            # 检查间隔是否过小（小于1小时）
+                            interval_hours = float(str(cron).strip())
+                            if interval_hours < 1:
+                                logger.warning(f"检测到间隔过小 ({interval_hours}小时)，已自动调整为默认随机执行")
+                                return self.__get_random_schedule()
+                                
                             return [{
                                 "id": "GroupChatZone",
                                 "name": "站点喊话服务",
                                 "trigger": "interval",
                                 "func": self.send_site_messages,
                                 "kwargs": {
-                                    "hours": float(str(cron).strip()),
+                                    "hours": interval_hours,
                                 }
                             }]
                         else:
                             logger.error("站点喊话服务启动失败，周期格式错误")
+                            return self.__get_random_schedule()
                     else:
-                        # 默认0-24 按照周期运行
-                        return [{
-                            "id": "GroupChatZone",
-                            "name": "站点喊话服务",
-                            "trigger": "interval",
-                            "func": self.send_site_messages,
-                            "kwargs": {
-                                "hours": float(str(self._cron).strip()),
-                            }
-                        }]
+                        # 尝试解析为小时间隔
+                        try:
+                            interval_hours = float(str(self._cron).strip())
+                            # 检查间隔是否过小（小于1小时）
+                            if interval_hours < 1:
+                                logger.warning(f"检测到间隔过小 ({interval_hours}小时)，已自动调整为默认随机执行")
+                                return self.__get_random_schedule()
+                                
+                            # 默认0-24 按照周期运行
+                            return [{
+                                "id": "GroupChatZone",
+                                "name": "站点喊话服务",
+                                "trigger": "interval",
+                                "func": self.send_site_messages,
+                                "kwargs": {
+                                    "hours": interval_hours,
+                                }
+                            }]
+                        except ValueError:
+                            logger.error(f"无法解析周期配置: {self._cron}，已自动调整为默认随机执行")
+                            return self.__get_random_schedule()
             except Exception as err:
                 logger.error(f"定时任务配置错误：{str(err)}")
+                return self.__get_random_schedule()
         elif self._enabled:
-            # 随机时间
-            triggers = TimerUtils.random_scheduler(num_executions=1,
-                                                   begin_hour=9,
-                                                   end_hour=23,
-                                                   max_interval=6 * 60,
-                                                   min_interval=2 * 60)
-            ret_jobs = []
-            for trigger in triggers:
-                ret_jobs.append({
-                    "id": f"GroupChatZone|{trigger.hour}:{trigger.minute}",
-                    "name": "站点喊话服务",
-                    "trigger": "cron",
-                    "func": self.send_site_messages,
-                    "kwargs": {
-                        "hour": trigger.hour,
-                        "minute": trigger.minute
-                    }
-                })
-            return ret_jobs
+            # 使用随机调度
+            return self.__get_random_schedule()
         return []
+
+    def __get_random_schedule(self) -> List[Dict[str, Any]]:
+        """
+        获取随机调度配置
+        :return: 随机调度配置列表
+        """
+        # 随机时间
+        triggers = TimerUtils.random_scheduler(num_executions=1,
+                                               begin_hour=9,
+                                               end_hour=23,
+                                               max_interval=6 * 60,
+                                               min_interval=2 * 60)
+        ret_jobs = []
+        for trigger in triggers:
+            ret_jobs.append({
+                "id": f"GroupChatZone|{trigger.hour}:{trigger.minute}",
+                "name": "站点喊话服务",
+                "trigger": "cron",
+                "func": self.send_site_messages,
+                "kwargs": {
+                    "hour": trigger.hour,
+                    "minute": trigger.minute
+                }
+            })
+        return ret_jobs
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """
         拼装插件配置页面，需要返回两块数据：1、页面配置；2、数据结构
         """
-        # 站点的可选项（内置站点 + 自定义站点）
-        customSites = self.__custom_sites()
+        # 使用缓存获取站点信息，但不强制刷新
+        site_info = self.__get_site_info(refresh=False, log_update=False)
+        all_sites = site_info["all_sites"]
 
-        site_options = ([{"title": site.name, "value": site.id}
-                         for site in self.siteoper.list_order_by_pri()]
-                        + [{"title": site.get("name"), "value": site.get("id")}
-                           for site in customSites])
+        site_options = [{"title": site.get("name"), "value": site.get("id")} for site in all_sites]
+        
         return [
             {
                 'component': 'VForm',
@@ -359,7 +478,7 @@ class GroupChatZone(_PluginBase):
                                         'props': {
                                             'model': 'sites_messages',
                                             'label': '发送消息',
-                                            'rows': 8,
+                                            'rows': 6,
                                             'placeholder': '每一行一个配置，配置方式：\n'
                                                            '站点名称|消息内容1|消息内容2|消息内容3|...\n'
                                         }
@@ -380,12 +499,11 @@ class GroupChatZone(_PluginBase):
                                     {
                                         'component': 'VAlert',
                                         'props': {
-                                            'type': 'info',
+                                            'type': 'warning',
                                             'variant': 'tonal',
                                             'text': '配置注意事项：'
-                                                    '1、注意定时任务设置，避免每分钟执行一次导致频繁请求；'
-                                                    '2、消息发送执行间隔(秒)不能小于0，也不建议设置过大。1~5秒即可，设置过大可能导致线程运行时间过长；'
-                                                    '3、如配置有全局代理，会默认调用全局代理执行。'
+                                                    '1、消息发送执行间隔(秒)不能小于0，也不建议设置过大。1~5秒即可，设置过大可能导致线程运行时间过长；'
+                                                    '2、如配置有全局代理，会默认调用全局代理执行。'
                                         }
                                     }
                                 ]
@@ -442,6 +560,9 @@ class GroupChatZone(_PluginBase):
         """
         自动向站点发送消息
         """
+        if not self._lock:
+            self._lock = threading.Lock()
+            
         if not self._lock.acquire(blocking=False):
             logger.warning("已有任务正在执行，本次调度跳过！")
             return
@@ -449,67 +570,111 @@ class GroupChatZone(_PluginBase):
         try:
             self._running = True
             if self._chat_sites:
-                site_msgs = self.parse_site_messages(self._sites_messages)
+                site_messages = self._sites_messages if isinstance(self._sites_messages, str) else ""
+                self.__get_site_info(refresh=True, log_update=True)
+                
+                site_msgs = self.parse_site_messages(site_messages, refresh_cache=False)
                 self.__send_msgs(do_sites=self._chat_sites, site_msgs=site_msgs)
+        except Exception as e:
+            logger.error(f"发送站点消息时发生异常: {str(e)}")
         finally:
             self._running = False
-            self._lock.release()
+            if self._lock and hasattr(self._lock, 'locked') and self._lock.locked():
+                try:
+                    self._lock.release()
+                except RuntimeError:
+                    pass
             logger.debug("任务执行完成，锁已释放")
 
-    def parse_site_messages(self, site_messages: str) -> Dict[str, List[str]]:
+    def get_selected_sites(self) -> List[Dict[str, Any]]:
+        """
+        获取已选中的站点对象列表
+        :return: 站点对象列表
+        """
+        site_info = self.__get_site_info(refresh=False, log_update=False)
+        site_id_map = site_info.get("site_id_to_obj", {})
+        
+        # 过滤掉不存在的站点ID
+        selected_sites = []
+        for site_id in self._chat_sites:
+            if site_id in site_id_map:
+                selected_sites.append(site_id_map[site_id])
+            else:
+                logger.warning(f"站点ID {site_id} 不存在或已被删除")
+        
+        return selected_sites
+
+    def parse_site_messages(self, site_messages: str, refresh_cache=False) -> Dict[str, List[str]]:
         """
         解析输入的站点消息
         :param site_messages: 多行文本输入
+        :param refresh_cache: 是否刷新站点缓存
         :return: 字典，键为站点名称，值为该站点的消息
         """
         result = {}
         try:
-            # 获取所有选中的站点名称
-            all_sites = [site for site in self.sites.get_indexers() if not site.get("public")] + self.__custom_sites()
-            selected_site_names = {site.get("name") for site in all_sites if site.get("id") in self._chat_sites}
-            logger.info(f"获取到的选中站点名称列表: {selected_site_names}")
+            # 获取已选站点的名称集合
+            selected_sites = self.get_selected_sites()
+            valid_site_names = {site.get("name").strip() for site in selected_sites}
+            
+            logger.debug(f"有效站点名称列表: {valid_site_names}")
 
-            # 按行分割配置
-            for line in site_messages.strip().splitlines():
+            # 按行解析配置
+            for line_num, line in enumerate(site_messages.strip().splitlines(), 1):
+                line = line.strip()
+                if not line:
+                    continue  # 跳过空行
+
+                # 分割配置项
                 parts = line.split("|")
-                if len(parts) > 1:
-                    site_name = parts[0].strip()
-                    if site_name in selected_site_names:
-                        messages = [msg.strip() for msg in parts[1:] if msg.strip()]
-                        if messages:
-                            result[site_name] = messages
-                        else:
-                            logger.warn(f"站点 {site_name} 没有有效的消息内容")
-                    else:
-                        logger.warn(f"站点 {site_name} 不在选中列表中")
+                if len(parts) < 2:
+                    logger.warning(f"第{line_num}行格式错误，缺少分隔符: {line}")
+                    continue
+
+                # 解析站点名称和消息
+                site_name = parts[0].strip()
+                messages = [msg.strip() for msg in parts[1:] if msg.strip()]
+                
+                if not messages:
+                    logger.warning(f"第{line_num}行 [{site_name}] 没有有效消息内容")
+                    continue
+
+                # 验证站点有效性
+                if site_name not in valid_site_names:
+                    logger.warning(f"第{line_num}行 [{site_name}] 不在选中站点列表中")
+                    continue
+
+                # 合并相同站点的消息
+                if site_name in result:
+                    result[site_name].extend(messages)
+                    logger.debug(f"合并站点 [{site_name}] 的消息，当前数量：{len(result[site_name])}")
                 else:
-                    logger.warn(f"配置行格式错误，缺少分隔符: {line}")
+                    result[site_name] = messages
+
         except Exception as e:
-            logger.error(f"解析站点消息时出现异常: {str(e)}")
-        logger.info(f"站点消息解析完成，解析结果: {result}")
-        return result
+            logger.error(f"解析站点消息时出现异常: {str(e)}", exc_info=True)
+        finally:
+            logger.info(f"解析完成，共配置 {len(result)} 个有效站点的消息")
+            return result
 
     def __send_msgs(self, do_sites: list, site_msgs: Dict[str, List[str]]):
         """
         发送消息逻辑
         """
-        # 查询所有站点
-        all_sites = [site for site in self.sites.get_indexers() if not site.get("public")] + self.__custom_sites()
-        # 过滤掉没有选中的站点
-        do_sites = [site for site in all_sites if site.get("id") in do_sites] if do_sites else all_sites
-
-        if not do_sites:
+        # 获取站点对象
+        selected_sites = self.get_selected_sites()
+        
+        if not selected_sites:
             logger.info("没有需要发送消息的站点！")
             return
 
         # 执行站点发送消息
         site_results = {}
-        for site in do_sites:
+        for site in selected_sites:
             site_name = site.get("name")
             logger.info(f"开始处理站点: {site_name}")
             messages = site_msgs.get(site_name, [])
 
-            # 添加消息列表空值检查
             if not messages:
                 logger.warning(f"站点 {site_name} 没有需要发送的消息！")
                 continue
@@ -526,7 +691,7 @@ class GroupChatZone(_PluginBase):
                     logger.error(f"向站点 {site_name} 发送消息 '{message}' 失败: {str(e)}")
                     failure_count += 1
                     failed_messages.append(message)
-                # 修改间隔判断逻辑
+
                 if i < len(messages) - 1:
                     logger.info(f"等待 {self._interval_cnt} 秒后继续发送下一条消息...")
                     start_time = time.time()
@@ -541,7 +706,7 @@ class GroupChatZone(_PluginBase):
 
         # 发送通知
         if self._notify:
-            total_sites = len(do_sites)
+            total_sites = len(selected_sites)
             notification_text = f"全部站点数量: {total_sites}\n"
             for site_name, result in site_results.items():
                 success_count = result["success_count"]
@@ -559,16 +724,19 @@ class GroupChatZone(_PluginBase):
             )
 
         # 检查是否所有消息都发送成功
-        all_successful = all(result["success_count"] == len(messages) for site_name, messages in site_msgs.items() if (result := site_results.get(site_name)))
+        all_successful = all(result["success_count"] == len(site_msgs.get(site_name, [])) 
+                            for site_name, result in site_results.items())
         if all_successful:
             logger.info("所有站点的消息发送成功。")
         else:
             logger.info("部分消息发送失败！！！")
 
-        self.__update_config()
+        self.__update_config(refresh_cache=False)
 
     def send_message_to_site(self, site_info: CommentedMap, message: str):
-
+        """
+        向站点发送消息
+        """
         if not site_info:
             logger.error("无效的站点信息！")
             return
@@ -584,6 +752,7 @@ class GroupChatZone(_PluginBase):
             logger.error(f"站点 {site_name} 缺少必要信息，无法发送消息！")
             return
 
+        # 构建URL和请求参数
         send_url = urljoin(site_url, "/shoutbox.php")
         headers = {
             'User-Agent': ua,
@@ -599,50 +768,52 @@ class GroupChatZone(_PluginBase):
 
         # 配置重试策略
         retries = Retry(
-            total=3,  # 总重试次数
-            backoff_factor=1,  # 重试间隔时间因子
-            status_forcelist=[403, 404, 500, 502, 503, 504],  # 需要重试的状态码
-            allowed_methods=["GET"],  # 需要重试的HTTP方法
-            raise_on_status=False  # 不在重试时抛出异常，手动处理
+            total=3,
+            backoff_factor=1,
+            status_forcelist=[403, 404, 500, 502, 503, 504],
+            allowed_methods=frozenset(['GET', 'POST']),
+            raise_on_status=False
         )
-        adapter = HTTPAdapter(max_retries=retries)
 
-        # 使用 Session 对象复用，创建会话对象
+        adapter = HTTPAdapter(max_retries=retries, pool_connections=1, pool_maxsize=1)
+
         with requests.Session() as session:
             session.headers.update(headers)
-            session.proxies = proxies
+            if proxies:
+                session.proxies = proxies
             session.mount('https://', adapter)
+            session.mount('http://', adapter)
             
-            attempt = 0
-            while attempt < retries.total:
-                try:
-                    response = session.get(send_url, params=params, timeout=(3.05, 10))
-                    response.raise_for_status()  # 自动处理 4xx/5xx 状态码
-                    logger.info(f"向 {site_name} 发送消息 '{message}' 成功")
-                    break
-                except requests.exceptions.HTTPError as http_err:
-                    logger.error(f"向 {site_name} 发送消息 '{message}' 失败，HTTP 错误: {http_err}")
-                except requests.exceptions.RequestException as req_err:
-                    logger.error(f"向 {site_name} 发送消息 '{message}' 失败，请求异常: {req_err}")
-                
-                attempt += 1
-                if attempt < retries.total:
-                    backoff_time = retries.get_backoff_time(attempt)
-                    logger.info(f"重试 {attempt}/{retries.total}，将在 {backoff_time} 秒后重试...")
-                    time.sleep(backoff_time)
-                else:
-                    logger.error(f"向 {site_name} 发送消息 '{message}' 失败，重试次数已达上限")
+            try:
+                response = session.get(
+                    send_url, 
+                    params=params,
+                    timeout=(3.05, 10),
+                    allow_redirects=False
+                )
+                response.raise_for_status()
+                logger.info(f"向 {site_name} 发送消息 '{message}' 成功")
+            except requests.exceptions.HTTPError as http_err:
+                logger.error(f"向 {site_name} 发送消息 '{message}' 失败，HTTP 错误: {http_err}")
+                raise
+            except requests.exceptions.RequestException as req_err:
+                logger.error(f"向 {site_name} 发送消息 '{message}' 失败，请求异常: {req_err}")
+                raise
 
     def stop_service(self):
         """退出插件"""
         try:
             if self._scheduler:
-                if self._lock.locked():
+                if self._lock and hasattr(self._lock, 'locked') and self._lock.locked():
                     logger.info("等待当前任务执行完成...")
-                    self._lock.acquire()
-                    self._lock.release()
-                self._scheduler.remove_all_jobs()
-                if self._scheduler.running:
+                    try:
+                        self._lock.acquire()
+                        self._lock.release()
+                    except:
+                        pass
+                if hasattr(self._scheduler, 'remove_all_jobs'):
+                    self._scheduler.remove_all_jobs()
+                if hasattr(self._scheduler, 'running') and self._scheduler.running:
                     self._scheduler.shutdown()
                 self._scheduler = None
         except Exception as e:
@@ -657,23 +828,20 @@ class GroupChatZone(_PluginBase):
         config = self.get_config()
         if config:
             self._chat_sites = self.__remove_site_id(config.get("chat_sites") or [], site_id)
-            # 保存配置
-            self.__update_config()
+            # 保存配置，并刷新缓存
+            self.__update_config(refresh_cache=True)
 
     def __remove_site_id(self, do_sites, site_id):
         if do_sites:
             if isinstance(do_sites, str):
                 do_sites = [do_sites]
-
             # 删除对应站点
             if site_id:
                 do_sites = [site for site in do_sites if int(site) != int(site_id)]
             else:
                 # 清空
                 do_sites = []
-
             # 若无站点，则停止
             if len(do_sites) == 0:
                 self._enabled = False
-
         return do_sites
