@@ -23,7 +23,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.2.1"
+    plugin_version = "1.2.2"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -144,7 +144,11 @@ class ZhuqueHelper(_PluginBase):
 
                 # 开始执行
                 logger.info("开始获取用户信息...")
-                bonus, min_level = self.get_user_info(headers)
+                user_info = self.get_user_info(headers)
+                if not user_info or None in user_info:
+                    logger.error("获取用户信息失败，跳过后续操作")
+                    return
+                bonus, min_level = user_info
                 logger.info(f"获取用户信息完成，bonus: {bonus}, min_level: {min_level}")
 
                 logger.info("开始一键升级角色...")
@@ -197,12 +201,31 @@ class ZhuqueHelper(_PluginBase):
         try:
             response = RequestUtils(headers=headers).get_res(url=url)
             response.raise_for_status()
-            data = response.json()['data']
-            bonus = data['bonus']
-            min_level = min(char['info']['level'] for char in data['characters'])
+            data = response.json().get('data', {})
+            bonus = data.get('bonus', 0) 
+            characters = data.get('characters', [])
+            if not characters:
+                logger.warning("角色数据为空列表")
+                return None, None
+
+            valid_levels = []
+            for char in characters:
+                level = char.get('info', {}).get('level')
+                if level is not None:
+                    valid_levels.append(level)
+                else:
+                    logger.warning(f"发现无效角色数据: {char}")
+
+            if not valid_levels:
+                logger.error("所有角色均缺少有效等级信息")
+                return None, None
+
+            min_level = min(valid_levels)
             return bonus, min_level
+
         except requests.exceptions.RequestException as e:
-            logger.error(f"获取用户信息失败: {e}，响应内容：{response.content if 'response' in locals() else '无响应'}")
+            error_content = response.content if 'response' in locals() else '无响应'
+            logger.error(f"请求失败: {e} | 响应内容: {error_content[:200]}...")  # 截取前200字符避免日志过长
             return None, None
 
     def train_genshin_character(self, level, skill_release, level_up, headers):
