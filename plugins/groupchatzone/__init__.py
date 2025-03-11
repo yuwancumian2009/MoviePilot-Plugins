@@ -394,24 +394,19 @@ class GroupChatZone(_PluginBase):
                                 ]
                             },
                             {
-                                'component': 'VRow',
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 3
+                                },
                                 'content': [
                                     {
-                                        'component': 'VCol',
+                                        'component': 'VSwitch',
                                         'props': {
-                                            'cols': 12,
-                                            'md': 3
-                                        },
-                                        'content': [
-                                            {
-                                                'component': 'VSwitch',
-                                                'props': {
-                                                    'model': 'get_feedback',
-                                                    'label': '获取喊话反馈',
-                                                    'hint': '获取喊话后的站点反馈(奖励信息)'
-                                                }
-                                            }
-                                        ]
+                                            'model': 'get_feedback',
+                                            'label': '获取喊话反馈',
+                                            'hint': '获取喊话后的站点反馈(奖励信息)'
+                                        }
                                     }
                                 ]
                             },
