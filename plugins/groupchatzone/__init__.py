@@ -394,6 +394,27 @@ class GroupChatZone(_PluginBase):
                                 ]
                             },
                             {
+                                'component': 'VRow',
+                                'content': [
+                                    {
+                                        'component': 'VCol',
+                                        'props': {
+                                            'cols': 12,
+                                        },
+                                        'content': [
+                                            {
+                                                'component': 'VSwitch',
+                                                'props': {
+                                                    'model': 'get_feedback',
+                                                    'label': '获取喊话反馈',
+                                                    'hint': '获取喊话后的站点反馈(奖励信息)'
+                                                }
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                            {
                                 'component': 'VCol',
                                 'props': {
                                     'cols': 12,
@@ -418,7 +439,7 @@ class GroupChatZone(_PluginBase):
                                 'component': 'VCol',
                                 'props': {
                                     'cols': 12,
-                                    'md': 6
+                                    'md': 4
                                 },
                                 'content': [
                                     {
@@ -427,6 +448,7 @@ class GroupChatZone(_PluginBase):
                                             'model': 'cron',
                                             'label': '执行周期',
                                             'placeholder': '5位cron表达式，留空自动'
+                                            'hint': '任务定时执行时间表达式'
                                         }
                                     }
                                 ]
@@ -435,7 +457,7 @@ class GroupChatZone(_PluginBase):
                                 'component': 'VCol',
                                 'props': {
                                     'cols': 12,
-                                    'md': 6
+                                    'md': 4
                                 },
                                 'content': [
                                     {
@@ -444,6 +466,25 @@ class GroupChatZone(_PluginBase):
                                             'model': 'interval_cnt',
                                             'label': '执行间隔',
                                             'placeholder': '多消息自动发送间隔时间（秒）'
+                                            'hint': '每条消息发送的间隔时间(秒)'
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 4
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextField',
+                                        'props': {
+                                            'model': 'feedback_timeout',
+                                            'label': '反馈等待时间(秒)',
+                                            'placeholder': '等待获取反馈的时间',
+                                            'hint': '喊话后等待站点响应的时间(秒)'
                                         }
                                     }
                                 ]
@@ -488,6 +529,7 @@ class GroupChatZone(_PluginBase):
                                             'rows': 6,
                                             'placeholder': '每一行一个配置，配置方式：\n'
                                                            '站点名称|消息内容1|消息内容2|消息内容3|...\n'
+                                                           '同一站点消息配置多行支持消息合并。\n'
                                         }
                                     }
                                 ]
@@ -548,46 +590,6 @@ class GroupChatZone(_PluginBase):
                                 'component': 'VCol',
                                 'props': {
                                     'cols': 12,
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VSwitch',
-                                        'props': {
-                                            'model': 'get_feedback',
-                                            'label': '获取喊话反馈',
-                                            'hint': '获取喊话后的站点反馈(奖励信息)'
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'feedback_timeout',
-                                            'label': '反馈等待时间(秒)',
-                                            'placeholder': '等待获取反馈的时间',
-                                            'hint': '喊话后等待站点响应的时间(秒)'
-                                        }
-                                    }
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 6
                                 },
                                 'content': [
                                     {
