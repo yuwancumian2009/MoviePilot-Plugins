@@ -20,14 +20,23 @@
 >> - GET:
 >> - ![](images/3.1.png)
 
-> #### 3. IYUUPlus开发版
+> #### 3. Lucky 动态域名全局WebHook设置
+>> POST:`http://moviepilot_ip:port/api/v1/plugin/MsgNotify/send_json?apikey=api_token`
+>> - 请求体：
+>> ```
+>>          {"title":"Lucky域名同步反馈 \nIP地址：","text":"#{ipAddr} \n域名更新成功列表：\n#{successDomainsLine}\n域名更新失败列表：\n#{failedDomainsLine}\n同步触发时间: \n#{time}"}
+>>```
+>> - POST:
+>> - ![](images/6.png)
+
+> #### 4. IYUUPlus开发版
 >> POST:`http://moviepilot_ip:port/api/v1/plugin/MsgNotify/send_json?apikey=api_token`
 >> GET:`IYUUPlus暂未提供`
 >> - 请求Body：`{"title":"{{title}}","text":"{{content}}"}`
 >> - POST:
 >> - ![](images/4.png)
 
-> #### 4. Proxmox Virtual Environment
+> #### 5. Proxmox Virtual Environment
 >> POST:`http://moviepilot_ip:port/api/v1/plugin/MsgNotify/send_json?apikey=api_token`
 >> - 正文：
 >> ```
