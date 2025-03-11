@@ -32,7 +32,7 @@ class GroupChatZone(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/GroupChat.png"
     # 插件版本
-    plugin_version = "1.3.0"
+    plugin_version = "1.3.1"
     # 插件作者
     plugin_author = "KoWming,madrays"
     # 作者主页
@@ -405,7 +405,6 @@ class GroupChatZone(_PluginBase):
                                         'props': {
                                             'model': 'get_feedback',
                                             'label': '获取喊话反馈',
-                                            'hint': '获取喊话后的站点反馈(奖励信息)'
                                         }
                                     }
                                 ]
