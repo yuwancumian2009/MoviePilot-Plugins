@@ -23,7 +23,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.2.2"
+    plugin_version = "1.2.3"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -204,17 +204,22 @@ class ZhuqueHelper(_PluginBase):
             data = response.json().get('data', {})
             bonus = data.get('bonus', 0) 
             characters = data.get('characters', [])
+            
             if not characters:
                 logger.warning("角色数据为空列表")
                 return None, None
 
+            invalid_count = 0
             valid_levels = []
             for char in characters:
                 level = char.get('info', {}).get('level')
                 if level is not None:
                     valid_levels.append(level)
                 else:
-                    logger.warning(f"发现无效角色数据: {char}")
+                    invalid_count += 1
+
+            if invalid_count > 0:
+                logger.warning(f"发现 {invalid_count} 条无效角色数据，已跳过")
 
             if not valid_levels:
                 logger.error("所有角色均缺少有效等级信息")
@@ -225,7 +230,7 @@ class ZhuqueHelper(_PluginBase):
 
         except requests.exceptions.RequestException as e:
             error_content = response.content if 'response' in locals() else '无响应'
-            logger.error(f"请求失败: {e} | 响应内容: {error_content[:200]}...")  # 截取前200字符避免日志过长
+            logger.error(f"请求失败: {e} | 响应内容: {error_content[:200]}...")
             return None, None
 
     def train_genshin_character(self, level, skill_release, level_up, headers):
