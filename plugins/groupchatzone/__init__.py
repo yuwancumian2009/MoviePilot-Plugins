@@ -5,16 +5,17 @@ import threading
 from datetime import datetime, timedelta
 from typing import Any, List, Dict, Tuple, Optional
 from urllib.parse import urljoin
-from urllib3.util.retry import 重试
+from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
 from cachetools import TTLCache, cached
+from bs4 import BeautifulSoup
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from ruamel.yaml import CommentedMap
 
 from app.chain.site import SiteChain
-from app.core.config import 设置
+from app.core.config import settings
 from app.core.event import eventmanager
 from app.db.site_oper import SiteOper
 from app.helper.sites import SitesHelper
@@ -85,15 +86,15 @@ class GroupChatZone(_PluginBase):
         self.stop_service()
 
         if config:
-            self._enabled = bool(config.get("enabled"， False))
-            self._cron = str(config.get("cron"， ""))
-            self._onlyonce = bool(config.get("onlyonce"， False))
-            self._notify = bool(config.get("notify"， False))
-            self._interval_cnt = int(config.get("interval_cnt"， 2))
-            self._chat_sites = config.get("chat_sites"， [])
-            self._sites_messages = str(config.get("sites_messages"， ""))
-            self._get_feedback = bool(config.get("get_feedback"， False))
-            self._feedback_timeout = int(config.get("feedback_timeout"， 5))
+            self._enabled = bool(config.get("enabled", False))
+            self._cron = str(config.get("cron", ""))
+            self._onlyonce = bool(config.get("onlyonce", False))
+            self._notify = bool(config.get("notify", False))
+            self._interval_cnt = int(config.get("interval_cnt", 2))
+            self._chat_sites = config.get("chat_sites", [])
+            self._sites_messages = str(config.get("sites_messages", ""))
+            self._get_feedback = bool(config.get("get_feedback", False))
+            self._feedback_timeout = int(config.get("feedback_timeout", 5))
 
             # 过滤掉已删除的站点 - 只获取一次站点列表
             all_site_ids = self.__get_all_site_ids(log_update=False)
@@ -103,7 +104,7 @@ class GroupChatZone(_PluginBase):
             self.__update_config(refresh_cache=False)
 
         # 加载模块
-        if self._enabled 或 self._onlyonce:
+        if self._enabled or self._onlyonce:
 
             # 立即运行一次
             if self._onlyonce:
@@ -111,8 +112,8 @@ class GroupChatZone(_PluginBase):
                     # 定时服务
                     self._scheduler = BackgroundScheduler(timezone=settings.TZ)
                     logger.info("站点喊话服务启动，立即运行一次")
-                    self._scheduler。add_job(func=self.send_site_messages, trigger='date'，
-                                            run_date=datetime.当前(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3)，
+                    self._scheduler.add_job(func=self.send_site_messages, trigger='date',
+                                            run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
                                             name="站点喊话服务")
 
                     # 关闭一次性开关
@@ -121,9 +122,9 @@ class GroupChatZone(_PluginBase):
                     self.__update_config(refresh_cache=False)
 
                     # 启动任务
-                    if self._scheduler 和 self._scheduler。get_jobs():
-                        self._scheduler。print_jobs()
-                        self._scheduler。start()
+                    if self._scheduler and self._scheduler.get_jobs():
+                        self._scheduler.print_jobs()
+                        self._scheduler.start()
                 except Exception as e:
                     logger.error(f"启动一次性任务失败: {str(e)}")
 
@@ -135,14 +136,14 @@ class GroupChatZone(_PluginBase):
         :return: 包含站点信息和映射的字典
         """
         # 如果需要强制刷新缓存，则清空缓存
-        if refresh 和 self._site_cache:
-            self._site_cache。clear()
+        if refresh and self._site_cache:
+            self._site_cache.clear()
             self._cache_initialized = False
             
-        if not self._cache_initialized 或 not self._site_cache:
+        if not self._cache_initialized or not self._site_cache:
             try:
                 # 获取所有站点信息
-                all_sites = [site for site in self.sites。get_indexers() if not site.get("public")] + self.__custom_sites()
+                all_sites = [site for site in self.sites.get_indexers() if not site.get("public")] + self.__custom_sites()
                 
                 # 创建映射
                 site_id_to_name = {site.get("id"): site.get("name") for site in all_sites}
@@ -171,16 +172,16 @@ class GroupChatZone(_PluginBase):
                 logger.error(f"获取站点信息失败: {str(e)}")
                 # 如果获取失败，返回空结构
                 empty_info = {
-                    "all_sites": []，
-                    "site_id_to_name": {}，
-                    "site_id_to_obj": {}，
-                    "site_name_to_obj": {}，
+                    "all_sites": [],
+                    "site_id_to_name": {},
+                    "site_id_to_obj": {},
+                    "site_name_to_obj": {},
                     "all_site_ids": []
                 }
                 return empty_info
         
         # 从缓存中获取站点信息
-        return self._site_cache。get("site_info"， {})
+        return self._site_cache.get("site_info", {})
 
     def __get_all_site_ids(self, log_update=True) -> List[str]:
         """
@@ -205,14 +206,14 @@ class GroupChatZone(_PluginBase):
         # 保存配置
         self.update_config(
             {
-                "enabled": self._enabled，
-                "notify": self._notify，
-                "cron": self._cron，
-                "onlyonce": self._onlyonce，
-                "interval_cnt": self._interval_cnt，
-                "chat_sites": self._chat_sites，
-                "sites_messages": self._sites_messages，
-                "get_feedback": self._get_feedback，
+                "enabled": self._enabled,
+                "notify": self._notify,
+                "cron": self._cron,
+                "onlyonce": self._onlyonce,
+                "interval_cnt": self._interval_cnt,
+                "chat_sites": self._chat_sites,
+                "sites_messages": self._sites_messages,
+                "get_feedback": self._get_feedback,
                 "feedback_timeout": self._feedback_timeout
             }
         )
@@ -235,52 +236,52 @@ class GroupChatZone(_PluginBase):
             "kwargs": {} # 定时器参数
         }]
         """
-        if self._enabled 和 self._cron:
+        if self._enabled and self._cron:
             try:
                 # 检查是否为5位cron表达式
-                if str(self._cron)。strip()。count(" ") == 4:
+                if str(self._cron).strip().count(" ") == 4:
                     # 解析cron表达式
-                    cron_parts = str(self._cron)。strip()。split()
+                    cron_parts = str(self._cron).strip().split()
                     
                     # 检查是否为每分钟执行一次 (分钟位为 * 或 */1)
-                    if cron_parts[0] == "*" 或 cron_parts[0] == "*/1":
+                    if cron_parts[0] == "*" or cron_parts[0] == "*/1":
                         logger.warning("检测到每分钟执行一次的配置，已自动调整为默认随机执行")
                         # 使用随机调度
                         return self.__get_random_schedule()
                     
                     # 正常的cron表达式
                     return [{
-                        "id": "GroupChatZone"，
-                        "name": "站点喊话服务"，
-                        "trigger": CronTrigger.from_crontab(self._cron)，
-                        "func": self.send_site_messages，
+                        "id": "GroupChatZone",
+                        "name": "站点喊话服务",
+                        "trigger": CronTrigger.from_crontab(self._cron),
+                        "func": self.send_site_messages,
                         "kwargs": {}
                     }]
                 else:
                     # 2.3/9-23
-                    crons = str(self._cron)。strip()。split("/")
+                    crons = str(self._cron).strip().split("/")
                     if len(crons) == 2:
                         # 2.3
                         cron = crons[0]
                         # 9-23
-                        times = crons[1]。split("-")
+                        times = crons[1].split("-")
                         if len(times) == 2:
                             # 9
                             self._start_time = int(times[0])
                             # 23
                             self._end_time = int(times[1])
-                        if self._start_time 和 self._end_time:
+                        if self._start_time and self._end_time:
                             # 检查间隔是否过小（小于1小时）
-                            interval_hours = float(str(cron)。strip())
+                            interval_hours = float(str(cron).strip())
                             if interval_hours < 1:
                                 logger.warning(f"检测到间隔过小 ({interval_hours}小时)，已自动调整为默认随机执行")
                                 return self.__get_random_schedule()
                                 
                             return [{
-                                "id": "GroupChatZone"，
-                                "name": "站点喊话服务"，
-                                "trigger": "interval"，
-                                "func": self.send_site_messages，
+                                "id": "GroupChatZone",
+                                "name": "站点喊话服务",
+                                "trigger": "interval",
+                                "func": self.send_site_messages,
                                 "kwargs": {
                                     "hours": interval_hours,
                                 }
@@ -291,7 +292,7 @@ class GroupChatZone(_PluginBase):
                     else:
                         # 尝试解析为小时间隔
                         try:
-                            interval_hours = float(str(self._cron)。strip())
+                            interval_hours = float(str(self._cron).strip())
                             # 检查间隔是否过小（小于1小时）
                             if interval_hours < 1:
                                 logger.warning(f"检测到间隔过小 ({interval_hours}小时)，已自动调整为默认随机执行")
@@ -299,10 +300,10 @@ class GroupChatZone(_PluginBase):
                                 
                             # 默认0-24 按照周期运行
                             return [{
-                                "id": "GroupChatZone"，
-                                "name": "站点喊话服务"，
-                                "trigger": "interval"，
-                                "func": self.send_site_messages，
+                                "id": "GroupChatZone",
+                                "name": "站点喊话服务",
+                                "trigger": "interval",
+                                "func": self.send_site_messages,
                                 "kwargs": {
                                     "hours": interval_hours,
                                 }
@@ -324,20 +325,20 @@ class GroupChatZone(_PluginBase):
         :return: 随机调度配置列表
         """
         # 随机时间
-        triggers = TimerUtils.random_scheduler(num_executions=1，
-                                               begin_hour=9，
-                                               end_hour=23，
-                                               max_interval=6 * 60，
+        triggers = TimerUtils.random_scheduler(num_executions=1,
+                                               begin_hour=9,
+                                               end_hour=23,
+                                               max_interval=6 * 60,
                                                min_interval=2 * 60)
         ret_jobs = []
         for trigger in triggers:
             ret_jobs.append({
-                "id": f"GroupChatZone|{trigger.hour}:{trigger.minute}"，
-                "name": "站点喊话服务"，
-                "trigger": "cron"，
-                "func": self.send_site_messages，
+                "id": f"GroupChatZone|{trigger.hour}:{trigger.minute}",
+                "name": "站点喊话服务",
+                "trigger": "cron",
+                "func": self.send_site_messages,
                 "kwargs": {
-                    "hour": trigger.hour，
+                    "hour": trigger.hour,
                     "minute": trigger.minute
                 }
             })
@@ -351,140 +352,140 @@ class GroupChatZone(_PluginBase):
         site_info = self.__get_site_info(refresh=False, log_update=False)
         all_sites = site_info["all_sites"]
 
-        site_options = [{"title": site.get("name")， "value": site.get("id")} for site in all_sites]
+        site_options = [{"title": site.get("name"), "value": site.get("id")} for site in all_sites]
         
         return [
             {
-                'component': 'VForm'，
+                'component': 'VForm',
                 'content': [
                     {
-                        'component': 'VRow'，
+                        'component': 'VRow',
                         'content': [
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
+                                    'cols': 12,
                                     'md': 4
-                                }，
+                                },
                                 'content': [
                                     {
-                                        'component': 'VSwitch'，
+                                        'component': 'VSwitch',
                                         'props': {
-                                            'model': 'enabled'，
-                                            'label': '启用插件'，
+                                            'model': 'enabled',
+                                            'label': '启用插件',
                                         }
                                     }
                                 ]
-                            }，
+                            },
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
+                                    'cols': 12,
                                     'md': 4
-                                }，
+                                },
                                 'content': [
                                     {
-                                        'component': 'VSwitch'，
+                                        'component': 'VSwitch',
                                         'props': {
-                                            'model': 'notify'，
-                                            'label': '发送通知'，
+                                            'model': 'notify',
+                                            'label': '发送通知',
                                         }
                                     }
                                 ]
-                            }，
+                            },
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
+                                    'cols': 12,
                                     'md': 4
-                                }，
+                                },
                                 'content': [
                                     {
-                                        'component': 'VSwitch'，
+                                        'component': 'VSwitch',
                                         'props': {
-                                            'model': 'onlyonce'，
-                                            'label': '立即运行一次'，
+                                            'model': 'onlyonce',
+                                            'label': '立即运行一次',
                                         }
                                     }
                                 ]
                             }
                         ]
-                    }，
+                    },
                     {
-                        'component': 'VRow'，
+                        'component': 'VRow',
                         'content': [
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
+                                    'cols': 12,
                                     'md': 6
-                                }，
+                                },
                                 'content': [
                                     {
-                                        'component': 'VCronField'，
+                                        'component': 'VCronField',
                                         'props': {
                                             'model': 'cron',
-                                            'label': '执行周期'，
+                                            'label': '执行周期',
                                             'placeholder': '5位cron表达式，留空自动'
                                         }
                                     }
                                 ]
-                            }，
+                            },
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
+                                    'cols': 12,
                                     'md': 6
-                                }，
+                                },
                                 'content': [
                                     {
-                                        'component': 'VTextField'，
+                                        'component': 'VTextField',
                                         'props': {
-                                            'model': 'interval_cnt'，
-                                            'label': '执行间隔'，
+                                            'model': 'interval_cnt',
+                                            'label': '执行间隔',
                                             'placeholder': '多消息自动发送间隔时间（秒）'
                                         }
                                     }
                                 ]
                             }
                         ]
-                    }，
+                    },
                     {
-                        'component': 'VRow'，
+                        'component': 'VRow',
                         'content': [
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'content': [
                                     {
-                                        'component': 'VSelect'，
+                                        'component': 'VSelect',
                                         'props': {
-                                            'chips': True，
-                                            'multiple': True，
-                                            'model': 'chat_sites'，
-                                            'label': '选择站点'，
+                                            'chips': True,
+                                            'multiple': True,
+                                            'model': 'chat_sites',
+                                            'label': '选择站点',
                                             'items': site_options
                                         }
                                     }
                                 ]
                             }
                         ]
-                    }，
+                    },
                     {
-                        'component': 'VRow'，
+                        'component': 'VRow',
                         'content': [
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
+                                    'cols': 12,
                                     'md': 12
-                                }，
+                                },
                                 'content': [
                                     {
-                                        'component': 'VTextarea'，
+                                        'component': 'VTextarea',
                                         'props': {
-                                            'model': 'sites_messages'，
-                                            'label': '发送消息'，
-                                            'rows': 6，
+                                            'model': 'sites_messages',
+                                            'label': '发送消息',
+                                            'rows': 6,
                                             'placeholder': '每一行一个配置，配置方式：\n'
                                                            '站点名称|消息内容1|消息内容2|消息内容3|...\n'
                                         }
@@ -492,21 +493,21 @@ class GroupChatZone(_PluginBase):
                                 ]
                             }
                         ]
-                    }，
+                    },
                     {
-                        'component': 'VRow'，
+                        'component': 'VRow',
                         'content': [
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
-                                }，
+                                    'cols': 12,
+                                },
                                 'content': [
                                     {
-                                        'component': 'VAlert'，
+                                        'component': 'VAlert',
                                         'props': {
-                                            'type': 'warning'，
-                                            'variant': 'tonal'，
+                                            'type': 'warning',
+                                            'variant': 'tonal',
                                             'text': '配置注意事项：'
                                                     '1、消息发送执行间隔(秒)不能小于0，也不建议设置过大。1~5秒即可，设置过大可能导致线程运行时间过长；'
                                                     '2、如配置有全局代理，会默认调用全局代理执行。'
@@ -515,21 +516,21 @@ class GroupChatZone(_PluginBase):
                                 ]
                             }
                         ]
-                    }，
+                    },
                     {
-                        'component': 'VRow'，
+                        'component': 'VRow',
                         'content': [
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
-                                }，
+                                    'cols': 12,
+                                },
                                 'content': [
                                     {
-                                        'component': 'VAlert'，
+                                        'component': 'VAlert',
                                         'props': {
-                                            'type': 'info'，
-                                            'variant': 'tonal'，
+                                            'type': 'info',
+                                            'variant': 'tonal',
                                             'text': '执行周期支持：'
                                                     '1、5位cron表达式；'
                                                     '2、配置间隔（小时），如2.3/9-23（9-23点之间每隔2.3小时执行一次）；'
@@ -539,61 +540,61 @@ class GroupChatZone(_PluginBase):
                                 ]
                             }
                         ]
-                    }，
+                    },
                     {
-                        'component': 'VRow'，
+                        'component': 'VRow',
                         'content': [
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
-                                }，
+                                    'cols': 12,
+                                },
                                 'content': [
                                     {
-                                        'component': 'VSwitch'，
+                                        'component': 'VSwitch',
                                         'props': {
-                                            'model': 'get_feedback'，
-                                            'label': '获取喊话反馈'，
+                                            'model': 'get_feedback',
+                                            'label': '获取喊话反馈',
                                             'hint': '获取喊话后的站点反馈(奖励信息)'
                                         }
                                     }
                                 ]
                             }
                         ]
-                    }，
+                    },
                     {
-                        'component': 'VRow'，
+                        'component': 'VRow',
                         'content': [
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
+                                    'cols': 12,
                                     'md': 6
-                                }，
+                                },
                                 'content': [
                                     {
-                                        'component': 'VTextField'，
+                                        'component': 'VTextField',
                                         'props': {
-                                            'model': 'feedback_timeout'，
-                                            'label': '反馈等待时间(秒)'，
-                                            'placeholder': '等待获取反馈的时间'，
+                                            'model': 'feedback_timeout',
+                                            'label': '反馈等待时间(秒)',
+                                            'placeholder': '等待获取反馈的时间',
                                             'hint': '喊话后等待站点响应的时间(秒)'
                                         }
                                     }
                                 ]
-                            }，
+                            },
                             {
-                                'component': 'VCol'，
+                                'component': 'VCol',
                                 'props': {
-                                    'cols': 12，
+                                    'cols': 12,
                                     'md': 6
-                                }，
+                                },
                                 'content': [
                                     {
-                                        'component': 'VAlert'，
+                                        'component': 'VAlert',
                                         'props': {
-                                            'type': 'info'，
-                                            'variant': 'tonal'，
+                                            'type': 'info',
+                                            'variant': 'tonal',
                                             'text': '获取反馈功能说明：'
                                                     '1、获取喊话后的站点反馈(奖励信息)，有助于了解站点对喊话的响应情况；'
                                                     '2、反馈信息包括奖励类型、数量和时间，有助于分析站点奖励机制。'
@@ -605,15 +606,15 @@ class GroupChatZone(_PluginBase):
                     }
                 ]
             }
-        ]， {
-            "enabled": False，
-            "notify": False，
-            "cron": ""，
-            "onlyonce": False，
-            "interval_cnt": 2，
-            "chat_sites": []，
-            "sites_messages": ""，
-            "get_feedback": False，
+        ], {
+            "enabled": False,
+            "notify": False,
+            "cron": "",
+            "onlyonce": False,
+            "interval_cnt": 2,
+            "chat_sites": [],
+            "sites_messages": "",
+            "get_feedback": False,
             "feedback_timeout": 5
         }
 
@@ -973,14 +974,14 @@ class GroupChatZone(_PluginBase):
         :param message: 发送的消息
         :return: 反馈信息字典
         """
-        site_name = site_info.get("name"， "")。strip()
-        site_url = site_info.get("url"， "")。strip()
+        site_name = site_info.get("name", "").strip()
+        site_url = site_info.get("url", "").strip()
         
         feedback_info = {
             "site": site_name,
             "message": message,
-            "rewards": []，
-            "time": datetime.当前()。strftime("%Y-%m-%d %H:%M:%S")
+            "rewards": [],
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         }
         
         try:
@@ -994,25 +995,25 @@ class GroupChatZone(_PluginBase):
             # 1. 获取喊话区反馈
             try:
                 if site_type == "PTLGS":
-                    feedback_info["rewards"]。extend(self.get_ptlgs_feedback(session, site_info, message))
+                    feedback_info["rewards"].extend(self.get_ptlgs_feedback(session, site_info, message))
                 elif site_type == "Frog":
-                    feedback_info["rewards"]。extend(self.get_frog_feedback(session, site_info, message))
+                    feedback_info["rewards"].extend(self.get_frog_feedback(session, site_info, message))
                 elif site_type == "Zhimeng":
                     # 织梦站点只获取邮件反馈，不获取喊话区反馈
                     pass
                 else:
-                    feedback_info["rewards"]。extend(self.get_shoutbox_feedback(session, site_info, message))
+                    feedback_info["rewards"].extend(self.get_shoutbox_feedback(session, site_info, message))
             except Exception as e:
                 logger.error(f"获取站点 {site_name} 的喊话区反馈失败: {str(e)}")
             
             # 2. 获取站内信反馈（邮件形式的反馈）
             try:
                 if site_type == "Elephant":
-                    feedback_info["rewards"]。extend(self.get_elephant_message_feedback(session, site_info))
+                    feedback_info["rewards"].extend(self.get_elephant_message_feedback(session, site_info))
                 elif site_type == "Zhimeng":
-                    feedback_info["rewards"]。extend(self.get_zhimeng_message_feedback(session, site_info))
+                    feedback_info["rewards"].extend(self.get_zhimeng_message_feedback(session, site_info))
                 else:
-                    feedback_info["rewards"]。extend(self.get_message_feedback(session, site_info))
+                    feedback_info["rewards"].extend(self.get_message_feedback(session, site_info))
             except Exception as e:
                 logger.error(f"获取站点 {site_name} 的站内信反馈失败: {str(e)}")
             
@@ -1025,26 +1026,26 @@ class GroupChatZone(_PluginBase):
                     desc = reward["description"]
                     
                     # 如果描述内容过长且没有特定关键词，认为是垃圾数据
-                    if len(desc) > 100 和 not any(keyword in desc for keyword in ["奖励"， "获得"， "赏"， "召唤"， "响应"， "工分"， "上传"， "下载"， "@"]):
+                    if len(desc) > 100 and not any(keyword in desc for keyword in ["奖励", "获得", "赏", "召唤", "响应", "工分", "上传", "下载", "@"]):
                         continue
                     
                     # 如果是页面导航内容，忽略
-                    if desc.startswith("首") 和 ("页" in desc[:10]) 和 ("论" in desc[:10]):
+                    if desc.startswith("首") and ("页" in desc[:10]) and ("论" in desc[:10]):
                         continue
                     
                     # 如果包含"欢迎回来"和大量其他内容，忽略
-                    if "欢迎回来" in desc 和 len(desc) > 50:
+                    if "欢迎回来" in desc and len(desc) > 50:
                         continue
                     
                     # 清理掉\xa0和多余空格
-                    desc = desc.replace("\xa0"， " ")。strip()
+                    desc = desc.replace("\xa0", " ").strip()
                     while "  " in desc:
-                        desc = desc.replace("  "， " ")
+                        desc = desc.replace("  ", " ")
                     
                     reward["description"] = desc
                 
                 # 只保留有价值的反馈
-                if reward.get("type") == "raw_feedback" 和 not self._is_useful_feedback(reward["description"], message):
+                if reward.get("type") == "raw_feedback" and not self._is_useful_feedback(reward["description"], message):
                     continue
                 
                 cleaned_rewards.append(reward)
@@ -1131,7 +1132,6 @@ class GroupChatZone(_PluginBase):
             )
             response.raise_for_status()
             
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # 获取用户名
@@ -1266,7 +1266,6 @@ class GroupChatZone(_PluginBase):
             )
             response.raise_for_status()
             
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # 先查找未读消息，如果没有再查找所有消息
@@ -1290,7 +1289,7 @@ class GroupChatZone(_PluginBase):
                         if read_link:
                             read_url = urljoin(site_url, read_link['href'])
                             # 发送请求标记为已读
-                            mark_response = session.get(read_url, timeout=(3.05， 5))
+                            mark_response = session.get(read_url, timeout=(3.05, 5))
                             mark_response.raise_for_status()
                             logger.info(f"已将站点 {site_name} 的未读消息标记为已读")
                     except Exception as e:
@@ -1311,10 +1310,10 @@ class GroupChatZone(_PluginBase):
                     # 检查消息是否是发给当前用户的，避免获取到其他用户的邮件
                     if self._is_message_for_current_user(row, session, site_info):
                         rewards.append({
-                            "type": "象草"，
+                            "type": "象草",
                             "amount": amount,
-                            "unit": "点"，
-                            "description": f"获得象草奖励"，
+                            "unit": "点",
+                            "description": f"获得象草奖励",
                             "is_negative": False
                         })
                         break
@@ -1323,32 +1322,32 @@ class GroupChatZone(_PluginBase):
             if not rewards:
                 # 尝试打开邮箱页面读取最新消息详情
                 inbox_url = urljoin(site_url, "/messages.php?action=viewmailbox&box=1")
-                inbox_response = session.get(inbox_url, timeout=(3.05， 10))
-                inbox_soup = BeautifulSoup(inbox_response.text， 'html.parser')
+                inbox_response = session.get(inbox_url, timeout=(3.05, 10))
+                inbox_soup = BeautifulSoup(inbox_response.text, 'html.parser')
                 
                 # 寻找最新的包含"象草"的邮件
                 messages = inbox_soup.select('tr:has(td:contains("象草"))')
                 if messages:
                     latest_message = messages[0]
-                    subject = latest_message.select_one('td:nth-child(2)')。get_text(strip=True)
+                    subject = latest_message.select_one('td:nth-child(2)').get_text(strip=True)
                     
                     # 尝试提取象草数量
                     elephant_match = re.search(r'(\d+)象草', subject)
                     if elephant_match:
                         amount = elephant_match.group(1)
                         rewards.append({
-                            "type": "象草"，
+                            "type": "象草",
                             "amount": amount,
-                            "unit": "点"，
-                            "description": f"获得象草奖励"，
+                            "unit": "点",
+                            "description": f"获得象草奖励",
                             "is_negative": False
                         })
                     else:
                         rewards.append({
-                            "type": "raw_feedback"，
-                            "amount": 0，
-                            "unit": ""，
-                            "description": f"象站反馈: {subject}"，
+                            "type": "raw_feedback",
+                            "amount": 0,
+                            "unit": "",
+                            "description": f"象站反馈: {subject}",
                             "is_negative": False
                         })
             
@@ -1380,7 +1379,6 @@ class GroupChatZone(_PluginBase):
             )
             response.raise_for_status()
             
-            from bs4 import BeautifulSoup
             html_text = response.text
             soup = BeautifulSoup(html_text, 'html.parser')
             
@@ -1528,7 +1526,6 @@ class GroupChatZone(_PluginBase):
             )
             response.raise_for_status()
             
-            from bs4 import BeautifulSoup
             soup = BeautifulSoup(response.text, 'html.parser')
             
             # 先查找未读消息，如果没有再查找所有消息
@@ -1649,10 +1646,10 @@ class GroupChatZone(_PluginBase):
         """
         删除对应站点选中
         """
-        site_id = event.event_data。get("site_id")
+        site_id = event.event_data.get("site_id")
         config = self.get_config()
         if config:
-            self._chat_sites = self.__remove_site_id(config.get("chat_sites") 或 [], site_id)
+            self._chat_sites = self.__remove_site_id(config.get("chat_sites") or [], site_id)
             # 保存配置，并刷新缓存
             self.__update_config(refresh_cache=True)
 
@@ -1681,20 +1678,19 @@ class GroupChatZone(_PluginBase):
         """
         import re  # 确保导入re模块
         rewards = []
-        site_name = site_info.get("name"， "")。strip()
-        site_url = site_info.get("url"， "")。strip()
+        site_name = site_info.get("name", "").strip()
+        site_url = site_info.get("url", "").strip()
         
         try:
             # 获取喊话区内容
             shoutbox_url = urljoin(site_url, "/shoutbox.php")
             response = session.get(
                 shoutbox_url,
-                timeout=(3.05， 10)
+                timeout=(3.05, 10)
             )
             response.raise_for_status()
             
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.text， 'html.parser')
+            soup = BeautifulSoup(response.text, 'html.parser')
             
             # 获取用户名
             username = self.get_username(session, site_info)
@@ -1703,34 +1699,34 @@ class GroupChatZone(_PluginBase):
             shouts = soup.select('.shoutrow, .specialshoutrow')
             
             # 查找最新的反馈（不限定时间，获取最新的@用户信息）
-            for i in range(min(20， len(shouts))):  # 检查最新的20条消息
+            for i in range(min(20, len(shouts))):  # 检查最新的20条消息
                 shout = shouts[i]
                 text = shout.get_text(strip=True)
                 
                 # 检查是否包含用户名的@消息
-                if username 和 f"@{username}" in text:
+                if username and f"@{username}" in text:
                     # 这可能是本次喊话的反馈
                     rewards.append({
-                        "type": "raw_feedback"，
-                        "amount": 0，
-                        "unit": ""，
-                        "description": self._clean_shoutbox_text(text)，
-                        "is_negative": "损失" in text 或 "惩罚" in text 或 "生气" in text 或 "不理" in text
+                        "type": "raw_feedback",
+                        "amount": 0,
+                        "unit": "",
+                        "description": self._clean_shoutbox_text(text),
+                        "is_negative": "损失" in text or "惩罚" in text or "生气" in text or "不理" in text
                     })
                     # 只获取最新的一条反馈
                     break
                 
                 # 如果找不到@用户的消息，但找到了包含用户发送消息内容的回复
-                elif message 和 message in text:
+                elif message and message in text:
                     # 查找下一条消息是否是系统/管理员回复
                     if i + 1 < len(shouts):
                         next_shout = shouts[i+1]
                         next_text = next_shout.get_text(strip=True)
                         # 如果下一条消息包含奖励关键词
-                        if any(keyword in next_text for keyword in ["奖励"， "获得"， "赏"， "响应"， "召唤"]):
+                        if any(keyword in next_text for keyword in ["奖励", "获得", "赏", "响应", "召唤"]):
                             rewards.append({
-                                "type": "raw_feedback"，
-                                "amount": 0，
+                                "type": "raw_feedback",
+                                "amount": 0,
                                 "unit": "",
                                 "description": self._clean_shoutbox_text(next_text),
                                 "is_negative": "损失" in next_text or "惩罚" in next_text or "生气" in next_text or "不理" in next_text
@@ -1750,20 +1746,19 @@ class GroupChatZone(_PluginBase):
         :return: 用户ID
         """
         import re  # 确保导入re模块
-        site_name = site_info.get("name"， "")。strip()
-        site_url = site_info.get("url"， "")。strip()
+        site_name = site_info.get("name", "").strip()
+        site_url = site_info.get("url", "").strip()
         
         try:
             # 访问个人信息页面
             usercp_url = urljoin(site_url, "/usercp.php")
             response = session.get(
                 usercp_url,
-                timeout=(3.05， 10)
+                timeout=(3.05, 10)
             )
             response.raise_for_status()
             
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.text， 'html.parser')
+            soup = BeautifulSoup(response.text, 'html.parser')
             
             # 查找用户ID
             user_id = None
@@ -1772,7 +1767,7 @@ class GroupChatZone(_PluginBase):
             profile_link = soup.select_one('a[href*="userdetails.php?id="]')
             if profile_link:
                 href = profile_link.get('href')
-                user_id = href.split('id=')[1]。split('&')[0]
+                user_id = href.split('id=')[1].split('&')[0]
             
             # 方法2: 从页面内容中获取
             if not user_id:
@@ -1793,20 +1788,19 @@ class GroupChatZone(_PluginBase):
         :return: 用户名
         """
         import re  # 确保导入re模块
-        site_name = site_info.get("name"， "")。strip()
-        site_url = site_info.get("url"， "")。strip()
+        site_name = site_info.get("name", "").strip()
+        site_url = site_info.get("url", "").strip()
         
         try:
             # 访问个人信息页面
             usercp_url = urljoin(site_url, "/usercp.php")
             response = session.get(
                 usercp_url,
-                timeout=(3.05， 10)
+                timeout=(3.05, 10)
             )
             response.raise_for_status()
             
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(response.text， 'html.parser')
+            soup = BeautifulSoup(response.text, 'html.parser')
             
             # 尝试多种方式获取用户名
             username = None
@@ -1832,7 +1826,7 @@ class GroupChatZone(_PluginBase):
                 user_elements = soup.select('.username, .user, .profile-username, a[href*="userdetails"]')
                 for elem in user_elements:
                     potential_username = elem.get_text(strip=True)
-                    if potential_username 和 len(potential_username) > 1 和 len(potential_username) < 30:
+                    if potential_username and len(potential_username) > 1 and len(potential_username) < 30:
                         username = potential_username
                         break
             
