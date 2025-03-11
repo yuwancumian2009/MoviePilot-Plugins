@@ -24,7 +24,7 @@
 >> POST:`http://moviepilot_ip:port/api/v1/plugin/MsgNotify/send_json?apikey=api_token`
 >> - 请求体：
 >> ```
->>          {"title":"Lucky域名同步反馈 \nIP地址：","text":"#{ipAddr} \n域名更新成功列表：\n#{successDomainsLine}\n域名更新失败列表：\n#{failedDomainsLine}\n同步触发时间: \n#{time}"}
+>>{"title":"Lucky域名同步反馈 \nIP地址：","text":"#{ipAddr} \n域名更新成功列表：\n#{successDomainsLine}\n域名更新失败列表：\n#{failedDomainsLine}\n同步触发时间: \n#{time}"}
 >>```
 >> - POST:
 >> - ![](images/6.png)
@@ -40,10 +40,10 @@
 >> POST:`http://moviepilot_ip:port/api/v1/plugin/MsgNotify/send_json?apikey=api_token`
 >> - 正文：
 >> ```
->>         {
->>         "title":"{{ title }}",
->>         "text":"{{ severity }}\n{{ escape message }}"
->>         }
+>>{
+>>"title":"{{ title }}",
+>>"text":"{{ severity }}\n{{ escape message }}"
+>>}
 >> ```
 >> - POST:
 >> - ![](images/5.png)
