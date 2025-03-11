@@ -34,7 +34,7 @@ class GroupChatZone(_PluginBase):
     # 插件版本
     plugin_version = "1.3.0"
     # 插件作者
-    plugin_author = "KoWming"
+    plugin_author = "KoWming,madrays"
     # 作者主页
     author_url = "https://github.com/KoWming"
     # 插件配置项ID前缀
