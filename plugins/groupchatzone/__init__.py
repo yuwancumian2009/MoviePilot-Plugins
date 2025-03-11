@@ -447,8 +447,7 @@ class GroupChatZone(_PluginBase):
                                         'props': {
                                             'model': 'cron',
                                             'label': '执行周期',
-                                            'placeholder': '5位cron表达式，留空自动',
-                                            'hint': '任务定时执行时间表达式'
+                                            'placeholder': '5位cron表达式，留空自动'
                                         }
                                     }
                                 ]
