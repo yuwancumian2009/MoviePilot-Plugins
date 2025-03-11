@@ -447,7 +447,7 @@ class GroupChatZone(_PluginBase):
                                         'props': {
                                             'model': 'cron',
                                             'label': '执行周期',
-                                            'placeholder': '5位cron表达式，留空自动'
+                                            'placeholder': '5位cron表达式，留空自动',
                                             'hint': '任务定时执行时间表达式'
                                         }
                                     }
@@ -465,7 +465,7 @@ class GroupChatZone(_PluginBase):
                                         'props': {
                                             'model': 'interval_cnt',
                                             'label': '执行间隔',
-                                            'placeholder': '多消息自动发送间隔时间（秒）'
+                                            'placeholder': '多消息自动发送间隔时间（秒）',
                                             'hint': '每条消息发送的间隔时间(秒)'
                                         }
                                     }
