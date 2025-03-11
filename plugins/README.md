@@ -29,6 +29,15 @@
 >> - POST:
 >> - ![](images/6.png)
 
+> #### 3.1. Lucky 全局Stun Webhook设置
+>> POST:`http://moviepilot_ip:port/api/v1/plugin/MsgNotify/send_json?apikey=api_token`
+>> - 请求体：
+>> ```
+>>{"title":"Lucky-stun穿透反馈","text":"#{ruleName} ：\n获得穿透公网IP地址：#{ip} \n获得穿透端口：#{port} \n获得公网IP地址(含端口)：#{ipAddr} \n触发时间: #{time}"}
+>>```
+>> - POST:
+>> - ![](images/6.1.png)
+
 > #### 4. IYUUPlus开发版
 >> POST:`http://moviepilot_ip:port/api/v1/plugin/MsgNotify/send_json?apikey=api_token`
 >> GET:`IYUUPlus暂未提供`
