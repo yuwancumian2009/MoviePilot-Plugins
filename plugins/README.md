@@ -46,6 +46,18 @@
 >> - ![](images/4.png)
 
 > #### 5. Proxmox Virtual Environment
+>>8.3.1 才有webhook： 
+>>`https://you-domain/pve-docs/chapter-notifications.html#notification_targets_webhook`
+>>#查询pve版本
+>>`pveversion`
+>>#升级到最新版本
+>>`apt update && apt upgrade -y`
+>>#执行完上面，这个应该可以不执行
+>>`apt dist-upgrade -y`
+>>#删除旧包
+>>`apt autoremove`
+>>#查询查询版本，自测不用重启
+>>`pveversion`
 >> POST:`http://moviepilot_ip:port/api/v1/plugin/MsgNotify/send_json?apikey=api_token`
 >> - 正文：
 >> ```
