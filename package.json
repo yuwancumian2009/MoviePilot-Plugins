@@ -74,5 +74,18 @@
           "v1.1": "修复一个代码错误。",
           "v1.0": "初始版本。"
       }
+  },
+  "CloudflaresSubscribe": {
+    "name": "Cloudflare订阅",
+    "description": "自动订阅Cloudflare免费DNS服务，支持批量订阅管理。",
+    "labels": "网络",
+    "version": "1.0",
+    "icon": "cloudflare.jpg",
+    "author": "KoWming",
+    "level": 2,
+    "v2": true,
+    "history": {
+        "v1.0": "初始版本。"
+    }
   }
 }
