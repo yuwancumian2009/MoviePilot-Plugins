@@ -79,12 +79,13 @@
     "name": "Cloudflare订阅",
     "description": "自动订阅Cloudflare免费DNS服务，支持批量订阅管理。",
     "labels": "网络",
-    "version": "1.0",
-    "icon": "cloudflare.jpg",
+    "version": "1.0.1",
+    "icon": "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Cloudflare_C.png",
     "author": "KoWming",
     "level": 2,
     "v2": true,
     "history": {
+        "v1.0.1": "版本优化。",
         "v1.0": "初始版本。"
     }
   }
