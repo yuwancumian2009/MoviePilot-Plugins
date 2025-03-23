@@ -19,9 +19,9 @@ class CloudflaresSubscribe(_PluginBase):
     # 插件描述
     plugin_desc = "自动订阅Cloudflare免费DNS服务，支持批量订阅管理。"
     # 插件图标
-    plugin_icon = "cloudflare.jpg"
+    plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Cloudflare_C.png"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.0.1"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
