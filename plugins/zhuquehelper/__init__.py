@@ -1,14 +1,11 @@
 import re
-import time
 import requests
-from datetime import datetime, timedelta
-from typing import Any, List, Dict, Tuple, Optional, Union, cast
+from datetime import datetime
+from typing import Any, List, Dict, Tuple, Optional
 
-import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from app.core.config import settings
 from app.plugins import _PluginBase
 from app.log import logger
 from app.schemas import NotificationType
@@ -23,7 +20,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.2.3"
+    plugin_version = "1.2.4"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -37,6 +34,7 @@ class ZhuqueHelper(_PluginBase):
 
     # 私有属性
     _enabled: bool = False
+
     # 任务执行间隔
     _cron: Optional[str] = None
     _cookie: Optional[str] = None
@@ -46,6 +44,9 @@ class ZhuqueHelper(_PluginBase):
     _level_up: Optional[bool] = None
     _skill_release: Optional[bool] = None
     _target_level: Optional[int] = None
+    
+    # 技能释放时间
+    _min_next_time: Optional[int] = None
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
@@ -70,36 +71,87 @@ class ZhuqueHelper(_PluginBase):
 
         if self._onlyonce:
             try:
-                # 定时服务
-                self._scheduler = BackgroundScheduler(timezone=settings.TZ)
                 logger.info("朱雀助手服务启动，立即运行一次")
-                if self._scheduler:
-                    self._scheduler.add_job(
-                        func=self.__signin, 
-                        trigger='date',
-                        run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
-                        name="朱雀助手"
-                    )
-                    # 关闭一次性开关
-                    self._onlyonce = False
-                    self.update_config({
-                        "onlyonce": False,
-                        "cron": self._cron,
-                        "enabled": self._enabled,
-                        "cookie": self._cookie,
-                        "notify": self._notify,
-                        "history_count": self._history_count,
-                        "level_up": self._level_up,
-                        "skill_release": self._skill_release,
-                        "target_level": self._target_level,
-                    })
+                # 关闭一次性开关
+                self._onlyonce = False
+                self.update_config({
+                    "onlyonce": False,
+                    "cron": self._cron,
+                    "enabled": self._enabled,
+                    "cookie": self._cookie,
+                    "notify": self._notify,
+                    "history_count": self._history_count,
+                    "level_up": self._level_up,
+                    "skill_release": self._skill_release,
+                    "target_level": self._target_level,
+                })
 
-                    # 启动任务
-                    if self._scheduler.get_jobs():
-                        self._scheduler.print_jobs()
-                        self._scheduler.start()
+                # 启动任务
+                self.__signin()
             except Exception as e:
                 logger.error(f"朱雀助手服务启动失败: {str(e)}")
+
+    def get_user_info(self, headers):
+        """
+        获取用户信息（灵石余额、角色最低等级和技能释放时间）
+        """
+        url = "https://zhuque.in/api/gaming/listGenshinCharacter"
+        try:
+            response = RequestUtils(headers=headers).get_res(url=url)
+            response.raise_for_status()
+            data = response.json().get('data', {})
+            bonus = data.get('bonus', 0) 
+            characters = data.get('characters', [])
+            
+            if not characters:
+                logger.warning("角色数据为空列表")
+                return None, None, None
+
+            invalid_count = 0
+            valid_levels = []
+            next_times = []
+            
+            for char in characters:
+                level = char.get('info', {}).get('level')
+                next_time = char.get('info', {}).get('next_time')
+                
+                if level is not None:
+                    valid_levels.append(level)
+                else:
+                    invalid_count += 1
+                    
+                if next_time is not None:
+                    next_times.append(next_time)
+
+            if invalid_count > 0:
+                logger.warning(f"发现 {invalid_count} 条无效角色数据，已跳过")
+
+            if not valid_levels:
+                logger.error("所有角色均缺少有效等级信息")
+                return None, None, None
+
+            min_level = min(valid_levels)
+            
+            # 获取最小next_time
+            min_next_time = min(next_times) if next_times else None
+            
+            return bonus, min_level, min_next_time
+
+        except requests.exceptions.RequestException as e:
+            error_content = response.content if 'response' in locals() else '无响应'
+            logger.error(f"请求失败: {e} | 响应内容: {error_content[:200]}...")
+            return None, None, None
+
+    def convert_timestamp_to_datetime(self, timestamp):
+        """
+        将时间戳转换为指定格式的日期时间字符串
+        """
+        try:
+            dt = datetime.fromtimestamp(timestamp)
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            logger.error(f"时间戳转换失败: {e}")
+            return None
 
     def __signin(self):
         """
@@ -115,7 +167,7 @@ class ZhuqueHelper(_PluginBase):
             pattern = r'<meta\s+name="x-csrf-token"\s+content="([^"]+)">'
             csrfToken = re.findall(pattern, res.text)
             if not csrfToken:
-                logger.error("请求csrfToken失败！页面内容：%s", res.text[:500])  # 打印部分页面内容以便调试
+                logger.error("请求csrfToken失败！页面内容：%s", res.text[:500])
                 return
 
             csrfToken = csrfToken[0]
@@ -148,8 +200,17 @@ class ZhuqueHelper(_PluginBase):
                 if not user_info or None in user_info:
                     logger.error("获取用户信息失败，跳过后续操作")
                     return
-                bonus, min_level = user_info
-                logger.info(f"获取用户信息完成，bonus: {bonus}, min_level: {min_level}")
+                bonus, min_level, min_next_time = user_info
+                logger.info(f"获取用户信息完成，bonus: {bonus}, min_level: {min_level}, min_next_time: {min_next_time}")
+
+                # 保存min_next_time
+                self._min_next_time = min_next_time
+
+                # 如果开启了技能释放且有最小next_time，记录下次执行时间
+                if self._skill_release and min_next_time:
+                    next_time_str = self.convert_timestamp_to_datetime(min_next_time)
+                    if next_time_str:
+                        logger.info(f"下次技能释放时间: {next_time_str}")
 
                 logger.info("开始一键升级角色...")
                 results = self.train_genshin_character(self._target_level, self._skill_release, self._level_up, headers)
@@ -167,7 +228,7 @@ class ZhuqueHelper(_PluginBase):
                     "username": username,
                     "bonus": bonus,
                     "min_level": min_level,
-                    "skill_release_bonus": results.get('skill_release', {}).get('bonus', 0),
+                    "skill_release_bonus": results.get('skill_release', {}).get('bonus', 0)
                 }
 
                 # 读取历史记录
@@ -192,46 +253,6 @@ class ZhuqueHelper(_PluginBase):
 
         except requests.exceptions.RequestException as e:
             logger.error(f"请求首页时发生异常: {e}")
-
-    def get_user_info(self, headers):
-        """
-        获取用户信息（灵石余额和角色最低等级）
-        """
-        url = "https://zhuque.in/api/gaming/listGenshinCharacter"
-        try:
-            response = RequestUtils(headers=headers).get_res(url=url)
-            response.raise_for_status()
-            data = response.json().get('data', {})
-            bonus = data.get('bonus', 0) 
-            characters = data.get('characters', [])
-            
-            if not characters:
-                logger.warning("角色数据为空列表")
-                return None, None
-
-            invalid_count = 0
-            valid_levels = []
-            for char in characters:
-                level = char.get('info', {}).get('level')
-                if level is not None:
-                    valid_levels.append(level)
-                else:
-                    invalid_count += 1
-
-            if invalid_count > 0:
-                logger.warning(f"发现 {invalid_count} 条无效角色数据，已跳过")
-
-            if not valid_levels:
-                logger.error("所有角色均缺少有效等级信息")
-                return None, None
-
-            min_level = min(valid_levels)
-            return bonus, min_level
-
-        except requests.exceptions.RequestException as e:
-            error_content = response.content if 'response' in locals() else '无响应'
-            logger.error(f"请求失败: {e} | 响应内容: {error_content[:200]}...")
-            return None, None
 
     def train_genshin_character(self, level, skill_release, level_up, headers):
         results = {}
@@ -315,7 +336,23 @@ class ZhuqueHelper(_PluginBase):
         """
         注册插件公共服务
         """
-        if self._enabled and self._cron:
+        # 如果启用了技能释放且有保存的next_time，注册定时任务
+        if self._skill_release and self._min_next_time:
+            next_time_str = self.convert_timestamp_to_datetime(self._min_next_time)
+            if next_time_str:
+                logger.info(f"注册技能释放定时任务，下次执行时间: {next_time_str}")
+                return [{
+                    "id": "ZhuqueHelper",
+                    "name": "朱雀助手",
+                    "trigger": "date",
+                    "func": self.__signin,
+                    "kwargs": {
+                        "run_date": datetime.fromtimestamp(self._min_next_time)
+                    }
+                }]
+            
+        # 如果设置了cron，注册cron定时任务
+        if self._cron:
             return [{
                 "id": "ZhuqueHelper",
                 "name": "朱雀助手",
@@ -505,9 +542,40 @@ class ZhuqueHelper(_PluginBase):
                                         'component': 'VAlert',
                                         'props': {
                                             'type': 'info',
-                                            'variant': 'tonal',
-                                            'text': '特别鸣谢 Mr.Cai 大佬，插件源码来自于他的脚本。'
-                                        }
+                                            'variant': 'tonal'
+                                        },
+                                        'content': [
+                                            {
+                                                'component': 'div',
+                                                'content': [
+                                                    {
+                                                        'component': 'span',
+                                                        'text': '特别鸣谢 Mr.Cai 大佬，插件源码来自于他的脚本。'
+                                                    },
+                                                    {
+                                                        'component': 'br'
+                                                    },
+                                                    {
+                                                        'component': 'span',
+                                                        'text': '由于站点角色卡片技能释放时间不统一，导致cron定时器无法准确释放技能。'
+                                                    },
+                                                    {
+                                                        'component': 'br'
+                                                    },
+                                                    {
+                                                        'component': 'span',
+                                                        'text': '现优化了定时器注册逻辑动态获取角色卡片下次技能释放的最近时间。'
+                                                    },
+                                                    {
+                                                        'component': 'br'
+                                                    },
+                                                    {
+                                                        'component': 'span',
+                                                        'text': '使用获取的技能释放时间注册date定时器，如不开启【技能释放】则还是按照cron定时器执行。'
+                                                    }
+                                                ]
+                                            }
+                                        ]
                                     }
                                 ]
                             }
