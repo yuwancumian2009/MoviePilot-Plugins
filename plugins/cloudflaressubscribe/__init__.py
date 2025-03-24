@@ -21,7 +21,7 @@ class CloudflaresSubscribe(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Cloudflare_C.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -93,16 +93,6 @@ class CloudflaresSubscribe(_PluginBase):
                 if self._scheduler.get_jobs():
                     self._scheduler.print_jobs()
                     self._scheduler.start()
-                    
-            # 如果启用了插件且设置了定时任务，启动定时服务
-            elif self._enabled and self._cron:
-                self._scheduler = BackgroundScheduler(timezone=settings.TZ)
-                self._scheduler.add_job(
-                    func=self.__cloudflaresSubscribe,
-                    trigger=CronTrigger.from_crontab(self._cron),
-                    name="Cloudflare自动订阅"
-                )
-                self._scheduler.start()
 
     def __cloudflaresSubscribe(self):
         """
