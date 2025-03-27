@@ -1,4 +1,5 @@
 import re
+import time
 from datetime import datetime, timedelta
 from typing import List, Tuple, Dict, Optional, Any
 
@@ -21,7 +22,7 @@ class CloudflaresSubscribe(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Cloudflare_C.png"
     # 插件版本
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -103,7 +104,7 @@ class CloudflaresSubscribe(_PluginBase):
         # 获取自定义Hosts插件，若无设置则停止
         customHosts = self.get_config("CustomHosts")
         self._customhosts = customHosts and customHosts.get("enabled")
-        if not customHosts or not customHosts.get("hosts"):
+        if not self._customhosts:
             logger.error(f"Cloudflare订阅依赖于自定义Hosts插件，请先安装并启用该插件")
             return
         
@@ -121,10 +122,7 @@ class CloudflaresSubscribe(_PluginBase):
         # 初始化变量
         updated = False
         final_hosts = []
-        current_section = []
         in_subscription = False
-        current_sub_name = None
-        processed_subs = set()
         
         # 第一步：保留原有内容，标记订阅部分
         for host in hosts:
@@ -136,14 +134,11 @@ class CloudflaresSubscribe(_PluginBase):
                 sub_name = host_line.split("# =====")[1].split("订阅开始")[0].strip()
                 if sub_name:
                     in_subscription = True
-                    current_sub_name = sub_name
-                    processed_subs.add(sub_name)
                     continue
             
             # 检查是否是订阅结束标记
             if "# =====" in host_line and "订阅结束" in host_line and in_subscription:
                 in_subscription = False
-                current_sub_name = None
                 continue
             
             # 如果不在订阅区域内，保留该行
@@ -154,6 +149,7 @@ class CloudflaresSubscribe(_PluginBase):
         all_subscription_hosts = []
         
         for name, url in subscriptions:
+            try:
                 logger.info(f"开始处理订阅：{name}")
                 # 添加User-Agent和其他请求头，避免被网站阻止
                 headers = {
@@ -166,130 +162,34 @@ class CloudflaresSubscribe(_PluginBase):
                 # 获取系统代理配置
                 proxies = settings.PROXY if hasattr(settings, 'PROXY') else None
                 
-                try:
-                    # 使用代理（如果有）发送请求
-                    if proxies:
-                        response = RequestUtils(headers=headers, proxies=proxies).get_res(url, timeout=10)
-                    else:
-                        response = RequestUtils(headers=headers).get_res(url, timeout=10)
-                        
-                    if not response or response.status_code != 200:
-                        error_msg = f"订阅 {name} 请求失败：HTTP {response.status_code if response else 'No Response'}"
-                        logger.error(error_msg)
-                        if self._notify:
-                            self.post_message(
-                                mtype=NotificationType.SiteMessage,
-                                title=f"【Cloudflares订阅更新失败】",
-                                text=f"{name} 订阅地址：{url}\n{error_msg}"
-                            )
-                        continue
-                        
-                    content = response.text
-                    
-                    # 检测是否为HTML内容
-                    html_indicators = ["<!DOCTYPE", "<html", "<body", "<script", "<input", "</div>"]
-                    is_html = any(indicator.lower() in content.lower() for indicator in html_indicators)
-                    
-                    if is_html:
-                        error_msg = f"订阅 {name} 返回了HTML页面而不是hosts文件内容，可能是重定向或需要认证"
-                        logger.error(error_msg)
-                        if self._notify:
-                            self.post_message(
-                                mtype=NotificationType.SiteMessage,
-                                title=f"【Cloudflares订阅更新失败】",
-                                text=f"{name} 订阅地址：{url}\n{error_msg}"
-                            )
-                        continue
-                    
-                    # 尝试清理内容
-                    content = self.__clean_hosts_content(content)
-                    
-                    # 检测是否为有效的hosts格式
-                    valid_line_pattern = False
-                    for line in content.splitlines():
-                        line = line.strip()
-                        if not line or line.startswith('#'):
-                            continue
-                        parts = line.split('#', 1)[0].strip().split()
-                        if len(parts) >= 2 and self.__is_valid_ip(parts[0]):
-                            valid_line_pattern = True
-                            break
-                    
-                    if not valid_line_pattern:
-                        error_msg = f"订阅 {name} 内容无效：未找到任何有效的hosts记录"
-                        logger.error(error_msg)
-                        if self._notify:
-                            self.post_message(
-                                mtype=NotificationType.SiteMessage,
-                                title=f"【Cloudflares订阅更新失败】",
-                                text=f"{name} 订阅地址：{url}\n{error_msg}"
-                            )
-                        continue
-                    
-                    logger.info(f"成功获取订阅 {name} 的内容，大小：{len(content)} 字节")
-                    
-                    # 处理订阅内容，解析hosts
-                    valid_hosts_count = 0
-                    subscription_hosts = []
-                    
-                    # 添加订阅标题注释
-                    subscription_hosts.append(f"# ===== {name} 订阅开始 ===== #\n")
-                    
-                    # 处理每行hosts
-                    for line in content.splitlines():
-                        line = line.strip()
-                        # 跳过空行或注释行
-                        if not line or line.startswith('#'):
-                            continue
-                        
-                        # 跳过明显的HTML标签
-                        if line.startswith('<') and '>' in line:
-                            continue
-                            
-                        # 解析IP和域名，处理行内注释
-                        parts = line.split('#', 1)[0].strip().split()
-                        if len(parts) >= 2:
-                            ip = parts[0]
-                            domain = parts[1]
-                            
-                            # 简单验证IP格式
-                            if self.__is_valid_ip(ip):
-                                subscription_hosts.append(f"{ip} {domain}\n")
-                                valid_hosts_count += 1
-                            else:
-                                # 只记录警告，但不显示明显的HTML内容
-                                if not any(html_tag in ip.lower() for html_tag in ["<html", "<script", "<body", "<!doctype"]):
-                                    logger.warning(f"忽略无效的IP记录：{line}")
+                max_retries = 3
+                retry_count = 0
+                response = None
+                while retry_count < max_retries:
+                    try:
+                        # 使用代理（如果有）发送请求
+                        if proxies:
+                            response = RequestUtils(headers=headers, proxies=proxies).get_res(url, timeout=30)
                         else:
-                            # 只记录警告，但不显示明显的HTML内容
-                            if not any(html_tag in line.lower() for html_tag in ["<html", "</html>", "<script", "</script>", "<body", "</body>"]):
-                                logger.warning(f"忽略格式错误的hosts记录：{line}")
-                    
-                    # 添加订阅结束注释
-                    subscription_hosts.append(f"# ===== {name} 订阅结束 ({valid_hosts_count} 条记录) ===== #\n")
-                    
-                    # 只有在有有效记录时才添加到总列表
-                    if valid_hosts_count > 0:
-                        all_subscription_hosts.extend(subscription_hosts)
-                        logger.info(f"订阅 {name} 处理完成，共添加 {valid_hosts_count} 条有效hosts记录")
-                        updated = True
+                            response = RequestUtils(headers=headers).get_res(url, timeout=30)
                         
-                        if self._notify:
-                            self.post_message(
-                                mtype=NotificationType.SiteMessage,
-                                title=f"【Cloudflares订阅更新成功】",
-                                text=f"{name} 订阅地址：{url}\n成功添加 {valid_hosts_count} 条hosts记录"
-                            )
-                    else:
-                        logger.warning(f"订阅 {name} 未找到有效的hosts记录，跳过更新")
-                        if self._notify:
-                            self.post_message(
-                                mtype=NotificationType.SiteMessage,
-                                title=f"【Cloudflares订阅无有效内容】",
-                                text=f"{name} 订阅地址：{url}\n未找到有效的hosts记录"
-                            )
-                except Exception as e:
-                    error_msg = f"处理订阅 {name} 时出错：{str(e)}"
+                        if response and response.status_code == 200:
+                            break  # 请求成功，跳出重试循环
+                        else:
+                            error_msg = f"订阅 {name} 请求失败：HTTP {response.status_code if response else 'No Response'}"
+                            logger.warning(f"第 {retry_count + 1} 次尝试：{error_msg}")
+                            retry_count += 1
+                            if retry_count < max_retries:
+                                time.sleep(5)  # 在重试之前等待5秒
+                    except Exception as e:
+                        error_msg = f"订阅 {name} 请求异常：{str(e)}"
+                        logger.warning(f"第 {retry_count + 1} 次尝试：{error_msg}")
+                        retry_count += 1
+                        if retry_count < max_retries:
+                            time.sleep(5)  # 在重试之前等待5秒
+
+                if retry_count == max_retries and (not response or response.status_code != 200):
+                    error_msg = f"订阅 {name} 请求失败，已重试 {max_retries} 次"
                     logger.error(error_msg)
                     if self._notify:
                         self.post_message(
@@ -297,6 +197,121 @@ class CloudflaresSubscribe(_PluginBase):
                             title=f"【Cloudflares订阅更新失败】",
                             text=f"{name} 订阅地址：{url}\n{error_msg}"
                         )
+                    continue
+
+                content = response.text
+                
+                # 检测是否为HTML内容
+                html_indicators = ["<!DOCTYPE", "<html", "<body", "<script", "<input", "</div>"]
+                is_html = any(indicator.lower() in content.lower() for indicator in html_indicators)
+                
+                if is_html:
+                    error_msg = f"订阅 {name} 返回了HTML页面而不是hosts文件内容，可能是重定向或需要认证"
+                    logger.error(error_msg)
+                    if self._notify:
+                        self.post_message(
+                            mtype=NotificationType.SiteMessage,
+                            title=f"【Cloudflares订阅更新失败】",
+                            text=f"{name} 订阅地址：{url}\n{error_msg}"
+                        )
+                    continue
+                
+                # 尝试清理内容
+                content = self.__clean_hosts_content(content)
+                
+                # 检测是否为有效的hosts格式
+                valid_line_pattern = False
+                for line in content.splitlines():
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split('#', 1)[0].strip().split()
+                    if len(parts) >= 2 and self.__is_valid_ip(parts[0]):
+                        valid_line_pattern = True
+                        break
+                
+                if not valid_line_pattern:
+                    error_msg = f"订阅 {name} 内容无效：未找到任何有效的hosts记录"
+                    logger.error(error_msg)
+                    if self._notify:
+                        self.post_message(
+                            mtype=NotificationType.SiteMessage,
+                            title=f"【Cloudflares订阅更新失败】",
+                            text=f"{name} 订阅地址：{url}\n{error_msg}"
+                        )
+                    continue
+                
+                logger.info(f"成功获取订阅 {name} 的内容，大小：{len(content)} 字节")
+                
+                # 处理订阅内容，解析hosts
+                valid_hosts_count = 0
+                subscription_hosts = []
+                
+                # 添加订阅标题注释
+                subscription_hosts.append(f"# ===== {name} 订阅开始 ===== #\n")
+                
+                # 处理每行hosts
+                for line in content.splitlines():
+                    line = line.strip()
+                    # 跳过空行或注释行
+                    if not line or line.startswith('#'):
+                        continue
+                    
+                    # 跳过明显的HTML标签
+                    if line.startswith('<') and '>' in line:
+                        continue
+                        
+                    # 解析IP和域名，处理行内注释
+                    parts = line.split('#', 1)[0].strip().split()
+                    if len(parts) >= 2:
+                        ip = parts[0]
+                        domain = parts[1]
+                        
+                        # 简单验证IP格式
+                        if self.__is_valid_ip(ip):
+                            subscription_hosts.append(f"{ip} {domain}\n")
+                            valid_hosts_count += 1
+                        else:
+                            # 只记录警告，但不显示明显的HTML内容
+                            if not any(html_tag in ip.lower() for html_tag in ["<html", "<script", "<body", "<!doctype"]):
+                                logger.warning(f"忽略无效的IP记录：{line}")
+                    else:
+                        # 只记录警告，但不显示明显的HTML内容
+                        if not any(html_tag in line.lower() for html_tag in ["<html", "</html>", "<script", "</script>", "<body", "</body>"]):
+                            logger.warning(f"忽略格式错误的hosts记录：{line}")
+                
+                # 添加订阅结束注释
+                subscription_hosts.append(f"# ===== {name} 订阅结束 ({valid_hosts_count} 条记录) ===== #\n")
+                
+                # 只有在有有效记录时才添加到总列表
+                if valid_hosts_count > 0:
+                    all_subscription_hosts.extend(subscription_hosts)
+                    logger.info(f"订阅 {name} 处理完成，共添加 {valid_hosts_count} 条有效hosts记录")
+                    updated = True
+                    
+                    if self._notify:
+                        self.post_message(
+                            mtype=NotificationType.SiteMessage,
+                            title=f"【Cloudflares订阅更新成功】",
+                            text=f"{name} 订阅地址：{url}\n成功添加 {valid_hosts_count} 条hosts记录"
+                        )
+                else:
+                    logger.warning(f"订阅 {name} 未找到有效的hosts记录，跳过更新")
+                    if self._notify:
+                        self.post_message(
+                            mtype=NotificationType.SiteMessage,
+                            title=f"【Cloudflares订阅无有效内容】",
+                            text=f"{name} 订阅地址：{url}\n未找到有效的hosts记录"
+                        )
+            except Exception as e:
+                error_msg = f"处理订阅 {name} 时出错：{str(e)}"
+                logger.error(error_msg)
+                if self._notify:
+                    self.post_message(
+                        mtype=NotificationType.SiteMessage,
+                        title=f"【Cloudflares订阅更新失败】",
+                        text=f"{name} 订阅地址：{url}\n{error_msg}"
+                    )
         
         # 合并现有hosts和所有订阅hosts
         if updated and all_subscription_hosts:
@@ -639,7 +654,7 @@ class CloudflaresSubscribe(_PluginBase):
                                             'type': 'info',
                                             'variant': 'tonal',
                                             'text': '插件依赖于【自定义Hosts】插件，使用前请先安装并启用该插件。'
-                                                    '可能会和【Cloudflare lP优选】插件冲突导致所有订阅IP被优选替换，请悉知。'
+                                                    '如果订阅失败可以尝试使用CDN地址拼接订阅地址。'
                                         }
                                     }
                                 ]
