@@ -136,10 +136,6 @@ class ZhuqueHelper(_PluginBase):
 
             # 获取当前时间戳
             current_time = time.time()
-            logger.info(f"当前时间：{self.convert_timestamp_to_datetime(current_time)}")
-            # 打印所有的next_times，全部都将时间戳进行转换
-            for next_time in next_times:
-                logger.debug(f"角色技能释放时间：{self.convert_timestamp_to_datetime(next_time)}")
             # 获取最小next_time
             min_next_time = min((t for t in next_times if t > current_time), default=None)
 
