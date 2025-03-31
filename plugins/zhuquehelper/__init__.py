@@ -1,5 +1,6 @@
 import re
 import requests
+import time
 from datetime import datetime
 from typing import Any, List, Dict, Tuple, Optional
 
@@ -8,6 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 
 from app.plugins import _PluginBase
 from app.log import logger
+from app.scheduler import Scheduler
 from app.schemas import NotificationType
 from app.utils.http import RequestUtils
 
@@ -20,7 +22,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.2.4"
+    plugin_version = "1.2.5"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -131,10 +133,16 @@ class ZhuqueHelper(_PluginBase):
                 return None, None, None
 
             min_level = min(valid_levels)
-            
+
+            # 获取当前时间戳
+            current_time = time.time()
+            logger.info(f"当前时间：{self.convert_timestamp_to_datetime(current_time)}")
+            # 打印所有的next_times，全部都将时间戳进行转换
+            for next_time in next_times:
+                logger.debug(f"角色技能释放时间：{self.convert_timestamp_to_datetime(next_time)}")
             # 获取最小next_time
-            min_next_time = min(next_times) if next_times else None
-            
+            min_next_time = min((t for t in next_times if t > current_time), default=None)
+
             return bonus, min_level, min_next_time
 
         except requests.exceptions.RequestException as e:
@@ -182,7 +190,8 @@ class ZhuqueHelper(_PluginBase):
             try:
                 res = RequestUtils(headers=headers).get_res(url="https://zhuque.in/api/user/getMainInfo")
                 if not res or res.status_code != 200:
-                    logger.error("请求用户信息失败！状态码：%s，响应内容：%s", res.status_code if res else "无响应", res.text if res else "")
+                    logger.error("请求用户信息失败！状态码：%s，响应内容：%s", res.status_code if res else "无响应",
+                                 res.text if res else "")
                     return
 
                 # 获取username
@@ -200,8 +209,20 @@ class ZhuqueHelper(_PluginBase):
                 if not user_info or None in user_info:
                     logger.error("获取用户信息失败，跳过后续操作")
                     return
+
+                logger.info("开始一键升级角色...")
+                results = self.train_genshin_character(self._target_level, self._skill_release, self._level_up, headers)
+                logger.info(f"一键升级完成，结果: {results}")
+
+                # 重新获取用户信息
+                logger.info("重新获取用户信息...")
+                user_info = self.get_user_info(headers)
+                if not user_info or None in user_info:
+                    logger.error("获取用户信息失败，跳过后续操作")
+                    return
                 bonus, min_level, min_next_time = user_info
-                logger.info(f"获取用户信息完成，bonus: {bonus}, min_level: {min_level}, min_next_time: {min_next_time}")
+                logger.info(
+                    f"获取用户信息完成，bonus: {bonus}, min_level: {min_level}, min_next_time: {self.convert_timestamp_to_datetime(min_next_time)}")
 
                 # 保存min_next_time
                 self._min_next_time = min_next_time
@@ -211,10 +232,6 @@ class ZhuqueHelper(_PluginBase):
                     next_time_str = self.convert_timestamp_to_datetime(min_next_time)
                     if next_time_str:
                         logger.info(f"下次技能释放时间: {next_time_str}")
-
-                logger.info("开始一键升级角色...")
-                results = self.train_genshin_character(self._target_level, self._skill_release, self._level_up, headers)
-                logger.info(f"一键升级完成，结果: {results}")
 
                 if bonus is not None and min_level is not None:
                     logger.info("开始生成报告...")
@@ -248,11 +265,20 @@ class ZhuqueHelper(_PluginBase):
                         title="【任务执行完成】",
                         text=f"{rich_text_report}")
 
+                self.reregister_plugin()
+
             except requests.exceptions.RequestException as e:
                 logger.error(f"请求用户信息时发生异常: {e}，响应内容：{res.text if 'res' in locals() else '无响应'}")
 
         except requests.exceptions.RequestException as e:
             logger.error(f"请求首页时发生异常: {e}")
+
+    def reregister_plugin(self) -> None:
+        """
+        重新注册插件
+        """
+        logger.info("重新注册插件")
+        Scheduler().update_plugin_job(self.__class__.__name__)
 
     def train_genshin_character(self, level, skill_release, level_up, headers):
         results = {}
@@ -303,6 +329,10 @@ class ZhuqueHelper(_PluginBase):
                     report += f"成功，本次释放获得 {results['skill_release'].get('bonus', 0)} 灵石 💎\n"
                 else:
                     report += f"失败，{results['skill_release'].get('error', '未知错误')} ❗️\n"
+                if self._min_next_time:
+                    next_time_str = self.convert_timestamp_to_datetime(self._min_next_time)
+                    if next_time_str:
+                        report += f"下次技能释放时间：{next_time_str} ⏰\n"
             report += f"一键升级：{'✅' if self._level_up else '❌'}\n"
             if 'level_up' in results:
                 if results['level_up']['status'] == '成功':
