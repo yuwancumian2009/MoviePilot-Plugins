@@ -22,7 +22,7 @@ class CloudflaresSubscribe(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Cloudflare_C.png"
     # 插件版本
-    plugin_version = "1.0.3"
+    plugin_version = "1.0.4"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -193,7 +193,7 @@ class CloudflaresSubscribe(_PluginBase):
                     logger.error(error_msg)
                     if self._notify:
                         self.post_message(
-                            mtype=NotificationType.SiteMessage,
+                            mtype=NotificationType.Plugin,
                             title=f"【Cloudflares订阅更新失败】",
                             text=f"{name} 订阅地址：{url}\n{error_msg}"
                         )
@@ -210,7 +210,7 @@ class CloudflaresSubscribe(_PluginBase):
                     logger.error(error_msg)
                     if self._notify:
                         self.post_message(
-                            mtype=NotificationType.SiteMessage,
+                            mtype=NotificationType.Plugin,
                             title=f"【Cloudflares订阅更新失败】",
                             text=f"{name} 订阅地址：{url}\n{error_msg}"
                         )
@@ -235,7 +235,7 @@ class CloudflaresSubscribe(_PluginBase):
                     logger.error(error_msg)
                     if self._notify:
                         self.post_message(
-                            mtype=NotificationType.SiteMessage,
+                            mtype=NotificationType.Plugin,
                             title=f"【Cloudflares订阅更新失败】",
                             text=f"{name} 订阅地址：{url}\n{error_msg}"
                         )
@@ -291,7 +291,7 @@ class CloudflaresSubscribe(_PluginBase):
                     
                     if self._notify:
                         self.post_message(
-                            mtype=NotificationType.SiteMessage,
+                            mtype=NotificationType.Plugin,
                             title=f"【Cloudflares订阅更新成功】",
                             text=f"{name} 订阅地址：{url}\n成功添加 {valid_hosts_count} 条hosts记录"
                         )
@@ -299,7 +299,7 @@ class CloudflaresSubscribe(_PluginBase):
                     logger.warning(f"订阅 {name} 未找到有效的hosts记录，跳过更新")
                     if self._notify:
                         self.post_message(
-                            mtype=NotificationType.SiteMessage,
+                            mtype=NotificationType.Plugin,
                             title=f"【Cloudflares订阅无有效内容】",
                             text=f"{name} 订阅地址：{url}\n未找到有效的hosts记录"
                         )
@@ -308,7 +308,7 @@ class CloudflaresSubscribe(_PluginBase):
                 logger.error(error_msg)
                 if self._notify:
                     self.post_message(
-                        mtype=NotificationType.SiteMessage,
+                        mtype=NotificationType.Plugin,
                         title=f"【Cloudflares订阅更新失败】",
                         text=f"{name} 订阅地址：{url}\n{error_msg}"
                     )
