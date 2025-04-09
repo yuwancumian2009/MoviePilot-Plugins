@@ -25,7 +25,7 @@ class LuckyHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Lucky_B.png"
     # 插件版本
-    plugin_version = "1.2.1"
+    plugin_version = "1.2.2"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -176,7 +176,7 @@ class LuckyHelper(_PluginBase):
         # 发送通知
         if self._notify:
             self.post_message(
-                mtype=NotificationType.SiteMessage,
+                mtype=NotificationType.Plugin,
                 title="【LuckyHelper备份完成】:",
                 text=f"备份{'成功' if success else '失败'}\n"
                     f"获取到 {bk_path}\n路径下备份文件数量: {bk_cnt}\n"
