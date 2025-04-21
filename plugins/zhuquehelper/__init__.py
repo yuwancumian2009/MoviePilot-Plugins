@@ -22,7 +22,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.2.5"
+    plugin_version = "1.2.6"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -362,31 +362,33 @@ class ZhuqueHelper(_PluginBase):
         """
         注册插件公共服务
         """
+        service = []
         # 如果启用了技能释放且有保存的next_time，注册定时任务
         if self._skill_release and self._min_next_time:
             next_time_str = self.convert_timestamp_to_datetime(self._min_next_time)
             if next_time_str:
-                logger.info(f"注册技能释放定时任务，下次执行时间: {next_time_str}")
-                return [{
-                    "id": "ZhuqueHelper",
-                    "name": "朱雀助手",
+                service.append({
+                    "id": "ZhuqueHelper_NextTime",
+                    "name": "朱雀助手 - 动态技能释放",
                     "trigger": "date",
                     "func": self.__signin,
                     "kwargs": {
                         "run_date": datetime.fromtimestamp(self._min_next_time)
                     }
-                }]
+                })
             
         # 如果设置了cron，注册cron定时任务
         if self._cron:
-            return [{
+            service.append({
                 "id": "ZhuqueHelper",
-                "name": "朱雀助手",
+                "name": "朱雀助手 - 定时任务",
                 "trigger": CronTrigger.from_crontab(self._cron),
                 "func": self.__signin,
                 "kwargs": {}
-            }]
-        return []
+            })
+
+        if service:
+            return service
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """
@@ -397,172 +399,316 @@ class ZhuqueHelper(_PluginBase):
                 'component': 'VForm',
                 'content': [
                     {
-                        'component': 'VRow',
+                        'component': 'VCard',
+                        'props': {
+                            'variant': 'outlined',
+                            'class': 'mt-0'
+                        },
                         'content': [
                             {
-                                'component': 'VCol',
+                                'component': 'VCardTitle',
                                 'props': {
-                                    'cols': 12,
-                                    'md': 4
+                                    'class': 'd-flex align-center'
                                 },
                                 'content': [
                                     {
-                                        'component': 'VSwitch',
+                                        'component': 'VIcon',
                                         'props': {
-                                            'model': 'enabled',
-                                            'label': '启用插件',
-                                        }
+                                            'style': 'color: #1976D2;',
+                                            'class': 'mr-2'
+                                        },
+                                        'text': 'mdi-cog'
+                                    },
+                                    {
+                                        'component': 'span',
+                                        'text': '基本设置'
                                     }
                                 ]
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 4
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VSwitch',
-                                        'props': {
-                                            'model': 'notify',
-                                            'label': '开启通知',
-                                        }
-                                    }
-                                ]
+                                'component': 'VDivider'
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 4
-                                },
+                                'component': 'VCardText',
                                 'content': [
                                     {
-                                        'component': 'VSwitch',
-                                        'props': {
-                                            'model': 'onlyonce',
-                                            'label': '立即运行一次',
-                                        }
+                                        'component': 'VRow',
+                                        'content': [
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'md': 4
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSwitch',
+                                                        'props': {
+                                                            'model': 'enabled',
+                                                            'label': '启用插件',
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'md': 4
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSwitch',
+                                                        'props': {
+                                                            'model': 'notify',
+                                                            'label': '开启通知',
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'md': 4
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSwitch',
+                                                        'props': {
+                                                            'model': 'onlyonce',
+                                                            'label': '立即运行一次',
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        ]
                                     }
                                 ]
                             }
                         ]
                     },
                     {
-                        'component': 'VRow',
+                        'component': 'VCard',
+                        'props': {
+                            'variant': 'outlined',
+                            'class': 'mt-3'
+                        },
                         'content': [
                             {
-                                'component': 'VCol',
+                                'component': 'VCardTitle',
                                 'props': {
-                                    'cols': 12,
-                                    'md': 2
+                                    'class': 'd-flex align-center'
                                 },
                                 'content': [
                                     {
-                                        'component': 'VSwitch',
+                                        'component': 'VIcon',
                                         'props': {
-                                            'model': 'skill_release',
-                                            'label': '技能释放',
-                                        }
+                                            'style': 'color: #1976D2;',
+                                            'class': 'mr-2'
+                                        },
+                                        'text': 'mdi-cog-sync'
+                                    },
+                                    {
+                                        'component': 'span',
+                                        'text': '功能设置'
                                     }
                                 ]
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 5
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'target_level',
-                                            'label': '角色最高等级'
-                                        }
-                                    }
-                                ]
+                                'component': 'VDivider'
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 5
-                                },
+                                'component': 'VCardText',
                                 'content': [
                                     {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'cookie',
-                                            'label': '站点cookie'
-                                        }
+                                        'component': 'VRow',
+                                        'content': [
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'md': 4
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSwitch',
+                                                        'props': {
+                                                            'model': 'skill_release',
+                                                            'label': '技能释放',
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'md': 8
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VTextField',
+                                                        'props': {
+                                                            'model': 'target_level',
+                                                            'label': '角色最高等级',
+                                                            'hint': '设置角色升级的目标等级'
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    },
+                                    {
+                                        'component': 'VRow',
+                                        'content': [
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'md': 4
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSwitch',
+                                                        'props': {
+                                                            'model': 'level_up',
+                                                            'label': '一键升级',
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'md': 8
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VTextField',
+                                                        'props': {
+                                                            'model': 'cookie',
+                                                            'label': '站点cookie',
+                                                            'hint': '用于登录站点的cookie信息'
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        ]
                                     }
                                 ]
                             }
                         ]
                     },
                     {
-                        'component': 'VRow',
+                        'component': 'VCard',
+                        'props': {
+                            'variant': 'outlined',
+                            'class': 'mt-3'
+                        },
                         'content': [
                             {
-                                'component': 'VCol',
+                                'component': 'VCardTitle',
                                 'props': {
-                                    'cols': 12,
-                                    'md': 2
+                                    'class': 'd-flex align-center'
                                 },
                                 'content': [
                                     {
-                                        'component': 'VSwitch',
+                                        'component': 'VIcon',
                                         'props': {
-                                            'model': 'level_up',
-                                            'label': '一键升级',
-                                        }
+                                            'style': 'color: #1976D2;',
+                                            'class': 'mr-2'
+                                        },
+                                        'text': 'mdi-clock-outline'
+                                    },
+                                    {
+                                        'component': 'span',
+                                        'text': '定时设置'
                                     }
                                 ]
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 5
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'cron',
-                                            'label': '签到周期'
-                                        }
-                                    }
-                                ]
+                                'component': 'VDivider'
                             },
                             {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 5
-                                },
+                                'component': 'VCardText',
                                 'content': [
                                     {
-                                        'component': 'VTextField',
-                                        'props': {
-                                            'model': 'history_count',
-                                            'label': '保留历史条数'
-                                        }
+                                        'component': 'VRow',
+                                        'content': [
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'md': 6
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VTextField',
+                                                        'props': {
+                                                            'model': 'cron',
+                                                            'label': '签到周期',
+                                                            'hint': '5位cron表达式，默认每天9点执行'
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'md': 6
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VTextField',
+                                                        'props': {
+                                                            'model': 'history_count',
+                                                            'label': '保留历史条数',
+                                                            'hint': '设置保留的历史记录数量'
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        ]
                                     }
                                 ]
                             }
                         ]
                     },
                     {
-                        'component': 'VRow',
+                        'component': 'VCard',
+                        'props': {
+                            'variant': 'outlined',
+                            'class': 'mt-3'
+                        },
                         'content': [
                             {
-                                'component': 'VCol',
+                                'component': 'VCardTitle',
                                 'props': {
-                                    'cols': 12,
+                                    'class': 'd-flex align-center'
                                 },
+                                'content': [
+                                    {
+                                        'component': 'VIcon',
+                                        'props': {
+                                            'style': 'color: #1976D2;',
+                                            'class': 'mr-2'
+                                        },
+                                        'text': 'mdi-information'
+                                    },
+                                    {
+                                        'component': 'span',
+                                        'text': '使用说明'
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VDivider'
+                            },
+                            {
+                                'component': 'VCardText',
                                 'content': [
                                     {
                                         'component': 'VAlert',
@@ -625,26 +771,130 @@ class ZhuqueHelper(_PluginBase):
         # 查询同步详情
         historys = self.get_data('sign_dict')
         if not historys:
-            logger.error("历史记录为空，无法显示任何信息。")
             return [
                 {
-                    'component': 'div',
-                    'text': '暂无数据',
+                    'component': 'VCard',
                     'props': {
-                        'class': 'text-center',
-                    }
+                        'variant': 'outlined',
+                        'class': 'ma-0 pa-0 elevation-0'
+                    },
+                    'content': [
+                        {
+                            'component': 'VCardTitle',
+                            'props': {
+                                'class': 'd-flex align-center'
+                            },
+                            'content': [
+                                {
+                                    'component': 'VIcon',
+                                    'props': {
+                                        'style': 'color: #1976D2;',
+                                        'class': 'mr-2'
+                                    },
+                                    'text': 'mdi-history'
+                                },
+                                {
+                                    'component': 'span',
+                                    'text': '历史记录'
+                                }
+                            ]
+                        },
+                        {
+                            'component': 'VDivider'
+                        },
+                        {
+                            'component': 'VCardText',
+                            'content': [
+                                {
+                                    'component': 'div',
+                                    'props': {
+                                        'class': 'text-center py-4'
+                                    },
+                                    'content': [
+                                        {
+                                            'component': 'VIcon',
+                                            'props': {
+                                                'icon': 'mdi-database-remove',
+                                                'size': '48',
+                                                'color': 'grey'
+                                            }
+                                        },
+                                        {
+                                            'component': 'div',
+                                            'props': {
+                                                'class': 'text-subtitle-1 mt-2'
+                                            },
+                                            'text': '暂无历史记录'
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
                 }
             ]
 
         if not isinstance(historys, list):
-            logger.error(f"历史记录格式不正确，类型为: {type(historys)}")
             return [
                 {
-                    'component': 'div',
-                    'text': '数据格式错误，请检查日志以获取更多信息。',
+                    'component': 'VCard',
                     'props': {
-                        'class': 'text-center',
-                    }
+                        'variant': 'outlined',
+                        'class': 'ma-0 pa-0 elevation-0'
+                    },
+                    'content': [
+                        {
+                            'component': 'VCardTitle',
+                            'props': {
+                                'class': 'd-flex align-center'
+                            },
+                            'content': [
+                                {
+                                    'component': 'VIcon',
+                                    'props': {
+                                        'style': 'color: #1976D2;',
+                                        'class': 'mr-2'
+                                    },
+                                    'text': 'mdi-history'
+                                },
+                                {
+                                    'component': 'span',
+                                    'text': '历史记录'
+                                }
+                            ]
+                        },
+                        {
+                            'component': 'VDivider'
+                        },
+                        {
+                            'component': 'VCardText',
+                            'content': [
+                                {
+                                    'component': 'div',
+                                    'props': {
+                                        'class': 'text-center py-4'
+                                    },
+                                    'content': [
+                                        {
+                                            'component': 'VIcon',
+                                            'props': {
+                                                'icon': 'mdi-alert-circle',
+                                                'size': '48',
+                                                'color': 'error'
+                                            }
+                                        },
+                                        {
+                                            'component': 'div',
+                                            'props': {
+                                                'class': 'text-subtitle-1 mt-2'
+                                            },
+                                            'text': '数据格式错误，请检查日志以获取更多信息。'
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
                 }
             ]
 
@@ -670,18 +920,30 @@ class ZhuqueHelper(_PluginBase):
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-high-emphasis'
+                        },
                         'text': history.get("username")
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-high-emphasis'
+                        },
                         'text': history.get("min_level")
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-high-emphasis'
+                        },
                         'text': f"{history.get('skill_release_bonus', 0)} 💎"
                     },
                     {
                         'component': 'td',
+                        'props': {
+                            'class': 'text-high-emphasis'
+                        },
                         'text': f"{history.get('bonus', 0)} 💎"
                     }
                 ]
@@ -691,57 +953,87 @@ class ZhuqueHelper(_PluginBase):
         # 拼装页面
         return [
             {
-                'component': 'VRow',
+                'component': 'VCard',
+                'props': {
+                    'variant': 'outlined',
+                    'class': 'ma-0 pa-0 elevation-0'
+                },
                 'content': [
                     {
-                        'component': 'VCol',
+                        'component': 'VCardTitle',
                         'props': {
-                            'cols': 12,
+                            'class': 'd-flex align-center'
                         },
+                        'content': [
+                            {
+                                'component': 'VIcon',
+                                'props': {
+                                    'style': 'color: #1976D2;',
+                                    'class': 'mr-2'
+                                },
+                                'text': 'mdi-history'
+                            },
+                            {
+                                'component': 'span',
+                                'text': '历史记录'
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VDivider'
+                    },
+                    {
+                        'component': 'VCardText',
                         'content': [
                             {
                                 'component': 'VTable',
                                 'props': {
-                                    'hover': True
+                                    'hover': True,
+                                    'density': 'comfortable'
                                 },
                                 'content': [
                                     {
                                         'component': 'thead',
                                         'content': [
                                             {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '时间'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '用户名'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '当前角色最低等级'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '本次释放获得的灵石'
-                                            },
-                                            {
-                                                'component': 'th',
-                                                'props': {
-                                                    'class': 'text-start ps-4'
-                                                },
-                                                'text': '当前账户灵石余额'
+                                                'component': 'tr',
+                                                'content': [
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4 font-weight-bold'
+                                                        },
+                                                        'text': '时间'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4 font-weight-bold'
+                                                        },
+                                                        'text': '用户名'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4 font-weight-bold'
+                                                        },
+                                                        'text': '当前角色最低等级'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4 font-weight-bold'
+                                                        },
+                                                        'text': '本次释放获得的灵石'
+                                                    },
+                                                    {
+                                                        'component': 'th',
+                                                        'props': {
+                                                            'class': 'text-start ps-4 font-weight-bold'
+                                                        },
+                                                        'text': '当前账户灵石余额'
+                                                    }
+                                                ]
                                             }
                                         ]
                                     },
@@ -750,6 +1042,13 @@ class ZhuqueHelper(_PluginBase):
                                         'content': sign_msgs
                                     }
                                 ]
+                            },
+                            {
+                                'component': 'div',
+                                'props': {
+                                    'class': 'text-caption text-grey mt-2'
+                                },
+                                'text': f'共显示 {len(historys)} 条记录'
                             }
                         ]
                     }
