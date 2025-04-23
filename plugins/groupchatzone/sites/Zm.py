@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin
+import re
 import time
 import requests
 from lxml import etree
@@ -134,18 +135,30 @@ class ZmHandler(ISiteHandler):
         if not zm_stats or not zm_stats.get(request_type):
             return None
             
-        # 提取数值部分(移除单位)
-        current_value = float(current_stats[request_type].split()[0])
-        history_value = float(zm_stats[request_type].split()[0])
+        # 转换当前值和历史值
+        def convert_value(value_str: str) -> float:
+            match = re.match(r'([\d,.]+)\s*([TGM]B)?', value_str.strip())
+            if not match:
+                return 0.0
+            value = float(match.group(1).replace(',', ''))
+            unit = match.group(2)
+            if unit == 'TB':
+                return value * 1024
+            elif unit == 'MB':
+                return value / 1024
+            return value
+            
+        current_value = convert_value(current_stats[request_type])
+        history_value = convert_value(zm_stats[request_type])
         
         # 计算差值
         diff = current_value - history_value
         
         # 生成反馈消息
         if diff > 0:
-            return f"皮总响应了你的请求，赠送你【{diff}{'GB' if request_type != 'bonus' else ''}{'上传量' if request_type == 'upload' else '下载量' if request_type == 'download' else '电力'}】"
+            return f"皮总响应了你的请求，赠送你【{diff:.2f}{'GB' if request_type != 'bonus' else ''}{'上传量' if request_type == 'upload' else '下载量' if request_type == 'download' else '电力'}】"
         elif diff < 0:
-            return f"皮总响应了你的请求，扣减你【{abs(diff)}{'GB' if request_type != 'bonus' else ''}{'上传量' if request_type == 'upload' else '下载量' if request_type == 'download' else '电力'}】"
+            return f"皮总响应了你的请求，扣减你【{abs(diff):.2f}{'GB' if request_type != 'bonus' else ''}{'上传量' if request_type == 'upload' else '下载量' if request_type == 'download' else '电力'}】"
         else:
             return "皮总没有理你，明天再来吧"
 
