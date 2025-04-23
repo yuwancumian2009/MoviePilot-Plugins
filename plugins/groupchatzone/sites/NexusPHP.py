@@ -181,7 +181,7 @@ class NexusPHPHandler(ISiteHandler):
     def get_user_privileges(self) -> Dict[str, str]:
         """
         获取用户特权信息
-        :return: 包含VIP和彩虹ID信息的字典
+        :return: 包含VIP、等级名称和彩虹ID信息的字典
         """
         try:
             # 获取用户ID
@@ -198,15 +198,26 @@ class NexusPHPHandler(ISiteHandler):
             # 解析HTML
             html = etree.HTML(response.text)
             
-            # 提取VIP信息
-            vip_info = html.xpath('//tr[td[contains(text(), "等级")]]/td[2]/text()')
+            # 提取等级信息
+            vip_info = html.xpath('//tr[td[contains(text(), "等级")]]/td[2]')
             vip_end_time = ""
+            level_name = ""
+
             if vip_info:
-                vip_text = vip_info[0]
-                vip_match = re.search(r'贵宾资格结束时间: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', vip_text)
-                if vip_match:
-                    vip_end_time = vip_match.group(1)
-                
+                # 首先提取等级名称
+                level_img = vip_info[0].xpath('.//img/@title')
+                if level_img:
+                    level_name = level_img[0]
+                    
+                    # 如果等级是贵宾,则提取贵宾资格结束时间
+                    if level_name == "贵宾":
+                        vip_text = vip_info[0].xpath('.//text()')
+                        if vip_text:
+                            vip_text = "".join(vip_text)
+                            vip_match = re.search(r'贵宾资格结束时间: (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})', vip_text)
+                            if vip_match:
+                                vip_end_time = vip_match.group(1)
+            
             # 提取彩虹ID信息
             rainbow_info = html.xpath('//tr[td[contains(text(), "道具")]]/td[2]//div/text()')
             rainbow_end_time = ""
@@ -218,6 +229,7 @@ class NexusPHPHandler(ISiteHandler):
                 
             return {
                 "vip_end_time": vip_end_time,
+                "level_name": level_name,
                 "rainbow_end_time": rainbow_end_time
             }
             
