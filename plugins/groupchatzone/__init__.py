@@ -33,7 +33,7 @@ class GroupChatZone(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Octopus.png"
     # 插件版本
-    plugin_version = "2.0"
+    plugin_version = "2.0.1"
     # 插件作者
     plugin_author = "KoWming,madrays"
     # 作者主页
@@ -435,7 +435,8 @@ class GroupChatZone(_PluginBase):
                             if dqc_privileges:
                                 vip_end = dqc_privileges.get("vip_end_time", "无")
                                 rainbow_end = dqc_privileges.get("rainbow_end_time", "无") 
-                                logger.info(f"获取大青虫站点特权信息成功 - VIP到期时间: {vip_end}, 彩虹ID到期时间: {rainbow_end}")
+                                level_name = dqc_privileges.get("level_name", "无")
+                                logger.info(f"获取大青虫站点特权信息成功 - VIP到期时间: {vip_end}, 彩虹ID到期时间: {rainbow_end}, 等级名称: {level_name}")
                             break
                     except Exception as e:
                         logger.error(f"获取大青虫站点特权信息失败: {str(e)}")
@@ -489,6 +490,22 @@ class GroupChatZone(_PluginBase):
                     if site_name == "大青虫" and dqc_privileges:
                         msg_type = message_info.get("type")
                         if msg_type == "vip":
+                            # 获取等级名称
+                            level_name = dqc_privileges.get("level_name", "")
+                            # 定义高等级列表
+                            high_levels = ["养老族", "发布员", "总版主", "管理员", "维护开发员", "主管"]
+                            
+                            # 如果等级高于VIP,直接跳过
+                            if level_name in high_levels:
+                                skip_reason = f"你都已经是 [{level_name}] 了，还求什么VIP？"
+                                logger.info(f"跳过求VIP消息，{skip_reason}")
+                                skipped_messages.append({
+                                    "message": message_info.get("content"),
+                                    "reason": skip_reason
+                                })
+                                continue
+                                
+                            # 如果等级不是高等级,则判断VIP到期时间
                             vip_end = dqc_privileges.get("vip_end_time", "")
                             if vip_end == "":
                                 logger.info(f"可以发送求VIP消息，因为VIP已到期")
