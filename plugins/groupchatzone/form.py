@@ -367,7 +367,7 @@ def form(site_options) -> list:
                                                     'props': {
                                                         'model': 'medal_bonus',
                                                         'label': '织梦勋章套装奖励',
-                                                        'hint': '该功能正在开发中,进度0%',
+                                                        'hint': '该功能正在开发中,进度50%',
                                                         'persistent-hint': True,
                                                         'disabled': True
                                                     }
