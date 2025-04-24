@@ -32,7 +32,7 @@ class GroupChatZone(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Octopus.png"
     # 插件版本
-    plugin_version = "2.0.2"
+    plugin_version = "2.0.3"
     # 插件作者
     plugin_author = "KoWming,madrays"
     # 作者主页
@@ -803,9 +803,10 @@ class GroupChatZone(_PluginBase):
                         
                     # 解析消息类型
                     msg_type = None
-                    if "求VIP" in msg:
+                    msg_lower = msg.lower()  # 转换为小写以支持大小写不敏感比较
+                    if "求vip" in msg_lower:
                         msg_type = "vip"
-                    elif "求彩虹ID" in msg:
+                    elif "求彩虹id" in msg_lower:
                         msg_type = "rainbow"
                         
                     messages.append({
