@@ -21,7 +21,6 @@ from app.scheduler import Scheduler
 from app.log import logger
 from app.plugins import _PluginBase
 from app.plugins.groupchatzone.sites import ISiteHandler
-from app.plugins.groupchatzone.sites.Zm import ZmHandler
 from app.schemas.types import EventType, NotificationType
 from app.utils.timer import TimerUtils
 
@@ -33,7 +32,7 @@ class GroupChatZone(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Octopus.png"
     # 插件版本
-    plugin_version = "2.0.1"
+    plugin_version = "2.0.2"
     # 插件作者
     plugin_author = "KoWming,madrays"
     # 作者主页
@@ -53,7 +52,6 @@ class GroupChatZone(_PluginBase):
     _scheduler: Optional[BackgroundScheduler] = None
     # 站点处理器
     _site_handlers = []
-
     #织梦奖励刷新时间
     _zm_next_time: Optional[int] = None
 
@@ -107,11 +105,20 @@ class GroupChatZone(_PluginBase):
 
         # 加载模块
         if self._enabled or self._onlyonce:
+
+            # 定时服务
+            self._scheduler = BackgroundScheduler(timezone=settings.TZ)
+
             # 立即运行一次
             if self._onlyonce:
                 try:
-                    # 定时服务
-                    self._scheduler = BackgroundScheduler(timezone=settings.TZ)
+                    # 如果勋章奖励开关打开，添加勋章奖励领取任务
+                    if self._medal_bonus:
+                        logger.info("勋章奖励开关已打开，添加勋章奖励领取任务")
+                        self._scheduler.add_job(func=self.send_medal_bonus, trigger='date',
+                                                run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=6),
+                                                name="群聊区服务 - 勋章奖励领取")
+
                     logger.info("群聊区服务启动，立即运行一次")
                     self._scheduler.add_job(func=self.send_site_messages, trigger='date',
                                             run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
@@ -375,22 +382,6 @@ class GroupChatZone(_PluginBase):
         try:
             self._running = True
             
-            # 执行勋章奖励任务
-            if self._medal_bonus:
-                try:
-                    # 获取织梦站点
-                    zm_sites = [site for site in self.sites.get_indexers() if "织梦" in site.get("name", "").lower()]
-                    for site in zm_sites:
-                        handler = self.get_site_handler(site)
-                        if handler and isinstance(handler, ZmHandler):
-                            success, msg = handler.medal_bonus()
-                            if success:
-                                logger.info(f"站点 {site.get('name')} 勋章奖励领取成功: {msg}")
-                            else:
-                                logger.error(f"站点 {site.get('name')} 勋章奖励领取失败: {msg}")
-                except Exception as e:
-                    logger.error(f"执行勋章奖励任务失败: {str(e)}")
-            
             # 原有的消息发送逻辑
             if not self._chat_sites:
                 logger.info("没有配置需要发送消息的站点")
@@ -537,7 +528,10 @@ class GroupChatZone(_PluginBase):
                             zm_jobs = [job for job in Scheduler().list() 
                                        if job.name == "群聊区服务 - 织梦下次执行任务"]
                             if zm_jobs:
-                                skip_reason = "织梦站点定时任务已存在，跳过消息发送。"
+                                # 获取任务的剩余时间
+                                next_run = zm_jobs[0].next_run if hasattr(zm_jobs[0], 'next_run') else ""
+                                skip_reason = f"织梦站点定时任务已存在，跳过消息发送\n"
+                                skip_reason += f"{f'  ✉️ 织梦 下次奖励获取将在{next_run}后执行' if next_run else '执行时间未知'}"
                                 logger.info(skip_reason)
                                 skipped_messages.append({
                                     "message": message_info.get("content"),
@@ -631,7 +625,7 @@ class GroupChatZone(_PluginBase):
                     self._lock.release()
                 except RuntimeError:
                     pass
-            logger.debug("任务执行完成")
+            logger.debug("喊话任务执行完成")
 
     def reregister_plugin(self) -> None:
         """
@@ -647,20 +641,6 @@ class GroupChatZone(_PluginBase):
         title = "💬群聊区任务完成报告"
         total_sites = len(site_results)
         notification_text = f"🌐 站点总数: {total_sites}\n"
-        
-        # 添加勋章奖励信息
-        if self._medal_bonus:
-            notification_text += "\n🎖️ 勋章奖励任务:\n"
-            zm_sites = [site for site in self.sites.get_indexers() if "织梦" in site.get("name", "").lower()]
-            for site in zm_sites:
-                handler = self.get_site_handler(site)
-                if handler and isinstance(handler, ZmHandler):
-                    # 获取勋章奖励信息
-                    success, msg = handler.medal_bonus()
-                    if success:
-                        notification_text += f"✅ {site.get('name')}: {msg}\n"
-                    else:
-                        notification_text += f"❌ {site.get('name')}: {msg}\n"
         
         # 添加喊话基本信息
         success_sites = []
@@ -750,6 +730,30 @@ class GroupChatZone(_PluginBase):
         
         notification_text += f"\n\n⏱️ {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}"
 
+        self.post_message(
+            mtype=NotificationType.SiteMessage,
+            title=title,
+            text=notification_text
+        )
+
+    def _send_tasks_notification(self, results: List[str]):
+        """
+        发送任务完成通知
+        :param results: 任务执行结果列表
+        """
+        if not self._medal_bonus:
+            return
+            
+        title = "💬群聊区任务系统执行报告"
+        notification_text = "🎖️ 勋章奖励领取:\n"
+        
+        if results:
+            notification_text += "\n".join(results)
+        else:
+            notification_text += "未找到有效的站点处理器"
+            
+        notification_text += f"\n\n⏱️ {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time()))}"
+        
         self.post_message(
             mtype=NotificationType.SiteMessage,
             title=title,
@@ -1048,6 +1052,44 @@ class GroupChatZone(_PluginBase):
                 except RuntimeError:
                     pass
             logger.debug("织梦站点喊话任务执行完成")
+
+    def send_medal_bonus(self) -> Tuple[bool, str]:
+        """
+        执行勋章奖励任务
+        :return: (是否成功, 结果信息)
+        """
+        if not self._medal_bonus:
+            return False, "勋章奖励任务未启用"
+            
+        try:
+            # 获取织梦站点
+            zm_sites = [site for site in self.sites.get_indexers() if "织梦" in site.get("name", "").lower()]
+            if not zm_sites:
+                return False, "未找到织梦站点"
+                
+            results = []
+            for site in zm_sites:
+                handler = self.get_site_handler(site)
+                if handler and hasattr(handler, 'medal_bonus'):
+                    success, msg = handler.medal_bonus()
+                    if success:
+                        logger.info(f"站点 {site.get('name')} 勋章奖励领取成功: {msg}")
+                        results.append(f"✅ {site.get('name')} {msg}")
+                    else:
+                        logger.error(f"站点 {site.get('name')} 勋章奖励领取失败: {msg}")
+                        results.append(f"❌ {site.get('name')}  勋章奖励领取失败: {msg}")
+                        
+            if not results:
+                return False, f"未找到有效的{site.get('name')}站点处理器"
+                
+            # 发送任务完成通知
+            self._send_tasks_notification(results)
+                
+            return True, "\n".join(results)
+        
+        except Exception as e:
+            logger.error(f"执行勋章奖励任务失败: {str(e)}")
+            return False, f"执行失败: {str(e)}"
 
 class NotificationIcons:
     """
