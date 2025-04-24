@@ -229,15 +229,12 @@ class ZmHandler(ISiteHandler):
         :return: (是否成功, 结果信息)
         """
         try:
-            # 发送POST请求获取勋章奖励
-            response = requests.post(
-                self.medal_url,
-                headers=self.headers
-            )
+            # 发送GET请求获取勋章奖励
+            response = self._send_get_request(self.medal_url)
             
-            if response.status_code != 200:
-                logger.error(f"获取勋章奖励失败: HTTP {response.status_code}")
-                return False, f"HTTP错误: {response.status_code}"
+            if not response:
+                logger.error("获取勋章奖励失败: 请求失败")
+                return False, "请求失败"
                 
             # 解析返回数据
             data = response.json()
@@ -261,9 +258,6 @@ class ZmHandler(ISiteHandler):
             logger.info(success_msg)
             return True, success_msg
             
-        except requests.exceptions.RequestException as e:
-            logger.error(f"请求勋章奖励失败: {str(e)}")
-            return False, f"请求失败: {str(e)}"
         except Exception as e:
             logger.error(f"处理勋章奖励失败: {str(e)}")
             return False, f"处理失败: {str(e)}"
