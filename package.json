@@ -99,5 +99,18 @@
         "v1.0.1": "版本优化。",
         "v1.0": "初始版本。"
     }
+  },
+  "LocalPluginInstall": {
+    "name": "本地插件安装",
+    "description": "上传本地ZIP插件包进行安装。",
+    "labels": "工具",
+    "version": "1.0",
+    "icon": "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/LocalPluginInstall.png",
+    "author": "KoWming",
+    "level": 1,
+    "v2": true,
+    "history": {
+        "v1.0": "初始版本。"
+    }
   }
 }
