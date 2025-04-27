@@ -22,7 +22,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.2.6"
+    plugin_version = "1.2.8"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -36,6 +36,7 @@ class ZhuqueHelper(_PluginBase):
 
     # 私有属性
     _enabled: bool = False
+    _adjust_time: int = 0
 
     # 任务执行间隔
     _cron: Optional[str] = None
@@ -70,6 +71,7 @@ class ZhuqueHelper(_PluginBase):
             self._level_up = config.get("level_up", False)
             self._skill_release = config.get("skill_release", False)
             self._target_level = int(config.get("target_level", 79))
+            self._adjust_time = int(config.get("adjust_time", 60))
 
         if self._onlyonce:
             try:
@@ -86,6 +88,7 @@ class ZhuqueHelper(_PluginBase):
                     "level_up": self._level_up,
                     "skill_release": self._skill_release,
                     "target_level": self._target_level,
+                    "adjust_time": self._adjust_time,
                 })
 
                 # 启动任务
@@ -367,13 +370,15 @@ class ZhuqueHelper(_PluginBase):
         if self._skill_release and self._min_next_time:
             next_time_str = self.convert_timestamp_to_datetime(self._min_next_time)
             if next_time_str:
+                # 添加微调时间
+                adjusted_time = self._min_next_time + self._adjust_time
                 service.append({
                     "id": "ZhuqueHelper_NextTime",
                     "name": "朱雀助手 - 动态技能释放",
                     "trigger": "date",
                     "func": self.__signin,
                     "kwargs": {
-                        "run_date": datetime.fromtimestamp(self._min_next_time)
+                        "run_date": datetime.fromtimestamp(adjusted_time)
                     }
                 })
             
@@ -398,38 +403,49 @@ class ZhuqueHelper(_PluginBase):
             {
                 'component': 'VForm',
                 'content': [
+                    # 基本设置
                     {
                         'component': 'VCard',
                         'props': {
-                            'variant': 'outlined',
-                            'class': 'mt-0'
+                            'variant': 'flat',
+                            'class': 'mb-6',
+                            'color': 'surface'
                         },
                         'content': [
                             {
-                                'component': 'VCardTitle',
+                                'component': 'VCardItem',
                                 'props': {
-                                    'class': 'd-flex align-center'
+                                    'class': 'pa-6'
                                 },
                                 'content': [
                                     {
-                                        'component': 'VIcon',
+                                        'component': 'VCardTitle',
                                         'props': {
-                                            'style': 'color: #1976D2;',
-                                            'class': 'mr-2'
+                                            'class': 'd-flex align-center text-h6'
                                         },
-                                        'text': 'mdi-cog'
-                                    },
-                                    {
-                                        'component': 'span',
-                                        'text': '基本设置'
+                                        'content': [
+                                            {
+                                                'component': 'VIcon',
+                                                'props': {
+                                                    'color': 'primary',
+                                                    'class': 'mr-3',
+                                                    'size': 'default'
+                                                },
+                                                'text': 'mdi-cog'
+                                            },
+                                            {
+                                                'component': 'span',
+                                                'text': '基本设置'
+                                            }
+                                        ]
                                     }
                                 ]
                             },
                             {
-                                'component': 'VDivider'
-                            },
-                            {
                                 'component': 'VCardText',
+                                'props': {
+                                    'class': 'px-6 pb-6'
+                                },
                                 'content': [
                                     {
                                         'component': 'VRow',
@@ -438,7 +454,7 @@ class ZhuqueHelper(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'md': 4
+                                                    'sm': 4
                                                 },
                                                 'content': [
                                                     {
@@ -446,6 +462,8 @@ class ZhuqueHelper(_PluginBase):
                                                         'props': {
                                                             'model': 'enabled',
                                                             'label': '启用插件',
+                                                            'color': 'primary',
+                                                            'hide-details': True
                                                         }
                                                     }
                                                 ]
@@ -454,7 +472,7 @@ class ZhuqueHelper(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'md': 4
+                                                    'sm': 4
                                                 },
                                                 'content': [
                                                     {
@@ -462,6 +480,8 @@ class ZhuqueHelper(_PluginBase):
                                                         'props': {
                                                             'model': 'notify',
                                                             'label': '开启通知',
+                                                            'color': 'primary',
+                                                            'hide-details': True
                                                         }
                                                     }
                                                 ]
@@ -470,7 +490,7 @@ class ZhuqueHelper(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'md': 4
+                                                    'sm': 4
                                                 },
                                                 'content': [
                                                     {
@@ -478,6 +498,8 @@ class ZhuqueHelper(_PluginBase):
                                                         'props': {
                                                             'model': 'onlyonce',
                                                             'label': '立即运行一次',
+                                                            'color': 'primary',
+                                                            'hide-details': True
                                                         }
                                                     }
                                                 ]
@@ -488,47 +510,61 @@ class ZhuqueHelper(_PluginBase):
                             }
                         ]
                     },
+                    # 功能设置
                     {
                         'component': 'VCard',
                         'props': {
-                            'variant': 'outlined',
-                            'class': 'mt-3'
+                            'variant': 'flat',
+                            'class': 'mb-6',
+                            'color': 'surface'
                         },
                         'content': [
                             {
-                                'component': 'VCardTitle',
+                                'component': 'VCardItem',
                                 'props': {
-                                    'class': 'd-flex align-center'
+                                    'class': 'pa-6'
                                 },
                                 'content': [
                                     {
-                                        'component': 'VIcon',
+                                        'component': 'VCardTitle',
                                         'props': {
-                                            'style': 'color: #1976D2;',
-                                            'class': 'mr-2'
+                                            'class': 'd-flex align-center text-h6'
                                         },
-                                        'text': 'mdi-cog-sync'
-                                    },
-                                    {
-                                        'component': 'span',
-                                        'text': '功能设置'
+                                        'content': [
+                                            {
+                                                'component': 'VIcon',
+                                                'props': {
+                                                    'color': 'primary',
+                                                    'class': 'mr-3',
+                                                    'size': 'default'
+                                                },
+                                                'text': 'mdi-puzzle'
+                                            },
+                                            {
+                                                'component': 'span',
+                                                'text': '功能设置'
+                                            }
+                                        ]
                                     }
                                 ]
                             },
                             {
-                                'component': 'VDivider'
-                            },
-                            {
                                 'component': 'VCardText',
+                                'props': {
+                                    'class': 'px-6 pb-6'
+                                },
                                 'content': [
                                     {
                                         'component': 'VRow',
+                                        'props': {
+                                            'class': 'mb-4'
+                                        },
                                         'content': [
                                             {
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'md': 4
+                                                    'sm': 4
                                                 },
                                                 'content': [
                                                     {
@@ -536,6 +572,8 @@ class ZhuqueHelper(_PluginBase):
                                                         'props': {
                                                             'model': 'skill_release',
                                                             'label': '技能释放',
+                                                            'color': 'primary',
+                                                            'hide-details': True
                                                         }
                                                     }
                                                 ]
@@ -544,16 +582,55 @@ class ZhuqueHelper(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'md': 8
+                                                    'sm': 8
                                                 },
                                                 'content': [
                                                     {
-                                                        'component': 'VTextField',
-                                                        'props': {
-                                                            'model': 'target_level',
-                                                            'label': '角色最高等级',
-                                                            'hint': '设置角色升级的目标等级'
-                                                        }
+                                                        'component': 'VRow',
+                                                        'content': [
+                                                            {
+                                                                'component': 'VCol',
+                                                                'props': {
+                                                                    'cols': 6
+                                                                },
+                                                                'content': [
+                                                                    {
+                                                                        'component': 'VTextField',
+                                                                        'props': {
+                                                                            'model': 'adjust_time',
+                                                                            'label': '下次释放微调(秒)',
+                                                                            'variant': 'underlined', 
+                                                                            'color': 'primary',
+                                                                            'hide-details': True,
+                                                                            'class': 'mt-2',
+                                                                            'type': 'number',
+                                                                            'min': 0,
+                                                                            'max': 300,
+                                                                            'hint': '在下次技能释放时间基础上增加的秒数(最大300秒)'
+                                                                        }
+                                                                    }
+                                                                ]
+                                                            },
+                                                            {
+                                                                'component': 'VCol',
+                                                                'props': {
+                                                                    'cols': 6
+                                                                },
+                                                                'content': [
+                                                                    {
+                                                                        'component': 'VTextField',
+                                                                        'props': {
+                                                                            'model': 'target_level',
+                                                                            'label': '角色最高等级',
+                                                                            'variant': 'underlined',
+                                                                            'color': 'primary',
+                                                                            'hide-details': True,
+                                                                            'class': 'mt-2'
+                                                                        }
+                                                                    }
+                                                                ]
+                                                            }
+                                                        ]
                                                     }
                                                 ]
                                             }
@@ -566,7 +643,7 @@ class ZhuqueHelper(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'md': 4
+                                                    'sm': 4
                                                 },
                                                 'content': [
                                                     {
@@ -574,6 +651,8 @@ class ZhuqueHelper(_PluginBase):
                                                         'props': {
                                                             'model': 'level_up',
                                                             'label': '一键升级',
+                                                            'color': 'primary',
+                                                            'hide-details': True
                                                         }
                                                     }
                                                 ]
@@ -582,15 +661,18 @@ class ZhuqueHelper(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'md': 8
+                                                    'sm': 8
                                                 },
                                                 'content': [
                                                     {
                                                         'component': 'VTextField',
                                                         'props': {
                                                             'model': 'cookie',
-                                                            'label': '站点cookie',
-                                                            'hint': '用于登录站点的cookie信息'
+                                                            'label': '站点Cookie',
+                                                            'variant': 'underlined',
+                                                            'color': 'primary',
+                                                            'hide-details': True,
+                                                            'class': 'mt-2'
                                                         }
                                                     }
                                                 ]
@@ -601,38 +683,49 @@ class ZhuqueHelper(_PluginBase):
                             }
                         ]
                     },
+                    # 定时设置
                     {
                         'component': 'VCard',
                         'props': {
-                            'variant': 'outlined',
-                            'class': 'mt-3'
+                            'variant': 'flat',
+                            'class': 'mb-6',
+                            'color': 'surface'
                         },
                         'content': [
                             {
-                                'component': 'VCardTitle',
+                                'component': 'VCardItem',
                                 'props': {
-                                    'class': 'd-flex align-center'
+                                    'class': 'pa-6'
                                 },
                                 'content': [
                                     {
-                                        'component': 'VIcon',
+                                        'component': 'VCardTitle',
                                         'props': {
-                                            'style': 'color: #1976D2;',
-                                            'class': 'mr-2'
+                                            'class': 'd-flex align-center text-h6'
                                         },
-                                        'text': 'mdi-clock-outline'
-                                    },
-                                    {
-                                        'component': 'span',
-                                        'text': '定时设置'
+                                        'content': [
+                                            {
+                                                'component': 'VIcon',
+                                                'props': {
+                                                    'color': 'primary',
+                                                    'class': 'mr-3',
+                                                    'size': 'default'
+                                                },
+                                                'text': 'mdi-clock-outline'
+                                            },
+                                            {
+                                                'component': 'span',
+                                                'text': '定时设置'
+                                            }
+                                        ]
                                     }
                                 ]
                             },
                             {
-                                'component': 'VDivider'
-                            },
-                            {
                                 'component': 'VCardText',
+                                'props': {
+                                    'class': 'px-6 pb-6'
+                                },
                                 'content': [
                                     {
                                         'component': 'VRow',
@@ -641,7 +734,7 @@ class ZhuqueHelper(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'md': 6
+                                                    'sm': 6
                                                 },
                                                 'content': [
                                                     {
@@ -649,7 +742,11 @@ class ZhuqueHelper(_PluginBase):
                                                         'props': {
                                                             'model': 'cron',
                                                             'label': '签到周期',
-                                                            'hint': '5位cron表达式，默认每天9点执行'
+                                                            'variant': 'underlined',
+                                                            'color': 'primary',
+                                                            'hide-details': True,
+                                                            'placeholder': '5位cron表达式，默认每天9点执行',
+                                                            'class': 'mt-2'
                                                         }
                                                     }
                                                 ]
@@ -658,7 +755,7 @@ class ZhuqueHelper(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'md': 6
+                                                    'sm': 6
                                                 },
                                                 'content': [
                                                     {
@@ -666,7 +763,10 @@ class ZhuqueHelper(_PluginBase):
                                                         'props': {
                                                             'model': 'history_count',
                                                             'label': '保留历史条数',
-                                                            'hint': '设置保留的历史记录数量'
+                                                            'variant': 'underlined',
+                                                            'color': 'primary',
+                                                            'hide-details': True,
+                                                            'class': 'mt-2'
                                                         }
                                                     }
                                                 ]
@@ -677,75 +777,80 @@ class ZhuqueHelper(_PluginBase):
                             }
                         ]
                     },
+                    # 使用说明
                     {
                         'component': 'VCard',
                         'props': {
-                            'variant': 'outlined',
-                            'class': 'mt-3'
+                            'variant': 'flat',
+                            'class': 'mb-6',
+                            'color': 'surface'
                         },
                         'content': [
                             {
-                                'component': 'VCardTitle',
+                                'component': 'VCardItem',
                                 'props': {
-                                    'class': 'd-flex align-center'
+                                    'class': 'pa-6'
                                 },
                                 'content': [
                                     {
-                                        'component': 'VIcon',
+                                        'component': 'VCardTitle',
                                         'props': {
-                                            'style': 'color: #1976D2;',
-                                            'class': 'mr-2'
+                                            'class': 'd-flex align-center text-h6'
                                         },
-                                        'text': 'mdi-information'
-                                    },
-                                    {
-                                        'component': 'span',
-                                        'text': '使用说明'
+                                        'content': [
+                                            {
+                                                'component': 'VIcon',
+                                                'props': {
+                                                    'color': 'primary',
+                                                    'class': 'mr-3',
+                                                    'size': 'default'
+                                                },
+                                                'text': 'mdi-help-circle'
+                                            },
+                                            {
+                                                'component': 'span',
+                                                'text': '使用说明'
+                                            }
+                                        ]
                                     }
                                 ]
                             },
                             {
-                                'component': 'VDivider'
-                            },
-                            {
                                 'component': 'VCardText',
+                                'props': {
+                                    'class': 'px-6 pb-6'
+                                },
                                 'content': [
                                     {
-                                        'component': 'VAlert',
+                                        'component': 'div',
                                         'props': {
-                                            'type': 'info',
-                                            'variant': 'tonal'
+                                            'class': 'text-body-1'
                                         },
                                         'content': [
                                             {
                                                 'component': 'div',
-                                                'content': [
-                                                    {
-                                                        'component': 'span',
-                                                        'text': '特别鸣谢 Mr.Cai 大佬，插件源码来自于他的脚本。'
-                                                    },
-                                                    {
-                                                        'component': 'br'
-                                                    },
-                                                    {
-                                                        'component': 'span',
-                                                        'text': '由于站点角色卡片技能释放时间不统一，导致cron定时器无法准确释放技能。'
-                                                    },
-                                                    {
-                                                        'component': 'br'
-                                                    },
-                                                    {
-                                                        'component': 'span',
-                                                        'text': '现优化了定时器注册逻辑动态获取角色卡片下次技能释放的最近时间。'
-                                                    },
-                                                    {
-                                                        'component': 'br'
-                                                    },
-                                                    {
-                                                        'component': 'span',
-                                                        'text': '使用获取的技能释放时间注册date定时器，如不开启【技能释放】则还是按照cron定时器执行。'
-                                                    }
-                                                ]
+                                                'props': {
+                                                    'class': 'mb-4'
+                                                },
+                                                'text': '特别鸣谢 Mr.Cai 大佬，插件源码来自于他的脚本。'
+                                            },
+                                            {
+                                                'component': 'div',
+                                                'props': {
+                                                    'class': 'mb-4'
+                                                },
+                                                'text': '由于站点角色卡片技能释放时间不统一，导致cron定时器无法准确释放技能。'
+                                            },
+                                            {
+                                                'component': 'div',
+                                                'props': {
+                                                    'class': 'mb-4'
+                                                },
+                                                'text': '现优化了定时器注册逻辑动态获取角色卡片下次技能释放的最近时间。'
+                                            },
+                                            {
+                                                'component': 'div',
+                                                'text': '使用获取的技能释放时间注册date定时器，如不开启【技能释放】则还是按照cron定时器执行。'
                                             }
                                         ]
                                     }
@@ -765,6 +870,7 @@ class ZhuqueHelper(_PluginBase):
             "history_count": 10,
             "cron": "0 9 * * *",
             "target_level": 79,
+            "adjust_time": 60,
         }
 
     def get_page(self) -> List[dict]:
@@ -775,32 +881,38 @@ class ZhuqueHelper(_PluginBase):
                 {
                     'component': 'VCard',
                     'props': {
-                        'variant': 'outlined',
-                        'class': 'ma-0 pa-0 elevation-0'
+                        'variant': 'flat',
+                        'class': 'mb-4'
                     },
                     'content': [
                         {
-                            'component': 'VCardTitle',
+                            'component': 'VCardItem',
                             'props': {
-                                'class': 'd-flex align-center'
+                                'class': 'pa-6'
                             },
                             'content': [
                                 {
-                                    'component': 'VIcon',
+                                    'component': 'VCardTitle',
                                     'props': {
-                                        'style': 'color: #1976D2;',
-                                        'class': 'mr-2'
+                                        'class': 'd-flex align-center text-h6'
                                     },
-                                    'text': 'mdi-history'
-                                },
-                                {
-                                    'component': 'span',
-                                    'text': '历史记录'
+                                    'content': [
+                                        {
+                                            'component': 'VIcon',
+                                            'props': {
+                                                'color': 'primary',
+                                                'class': 'mr-3',
+                                                'size': 'default'
+                                            },
+                                            'text': 'mdi-chart-line'
+                                        },
+                                        {
+                                            'component': 'span',
+                                            'text': '灵石趋势'
+                                        }
+                                    ]
                                 }
                             ]
-                        },
-                        {
-                            'component': 'VDivider'
                         },
                         {
                             'component': 'VCardText',
@@ -839,32 +951,38 @@ class ZhuqueHelper(_PluginBase):
                 {
                     'component': 'VCard',
                     'props': {
-                        'variant': 'outlined',
-                        'class': 'ma-0 pa-0 elevation-0'
+                        'variant': 'flat',
+                        'class': 'mb-4'
                     },
                     'content': [
                         {
-                            'component': 'VCardTitle',
+                            'component': 'VCardItem',
                             'props': {
-                                'class': 'd-flex align-center'
+                                'class': 'pa-6'
                             },
                             'content': [
                                 {
-                                    'component': 'VIcon',
+                                    'component': 'VCardTitle',
                                     'props': {
-                                        'style': 'color: #1976D2;',
-                                        'class': 'mr-2'
+                                        'class': 'd-flex align-center text-h6'
                                     },
-                                    'text': 'mdi-history'
-                                },
-                                {
-                                    'component': 'span',
-                                    'text': '历史记录'
+                                    'content': [
+                                        {
+                                            'component': 'VIcon',
+                                            'props': {
+                                                'color': 'primary',
+                                                'class': 'mr-3',
+                                                'size': 'default'
+                                            },
+                                            'text': 'mdi-chart-line'
+                                        },
+                                        {
+                                            'component': 'span',
+                                            'text': '灵石趋势'
+                                        }
+                                    ]
                                 }
                             ]
-                        },
-                        {
-                            'component': 'VDivider'
                         },
                         {
                             'component': 'VCardText',
@@ -903,93 +1021,189 @@ class ZhuqueHelper(_PluginBase):
         if self._history_count:
             historys = historys[:self._history_count]
 
-        # 签到消息
-        sign_msgs = [
-            {
-                'component': 'tr',
-                'props': {
-                    'class': 'text-sm'
-                },
-                'content': [
-                    {
-                        'component': 'td',
-                        'props': {
-                            'class': 'whitespace-nowrap break-keep text-high-emphasis'
-                        },
-                        'text': history.get("date")
-                    },
-                    {
-                        'component': 'td',
-                        'props': {
-                            'class': 'text-high-emphasis'
-                        },
-                        'text': history.get("username")
-                    },
-                    {
-                        'component': 'td',
-                        'props': {
-                            'class': 'text-high-emphasis'
-                        },
-                        'text': history.get("min_level")
-                    },
-                    {
-                        'component': 'td',
-                        'props': {
-                            'class': 'text-high-emphasis'
-                        },
-                        'text': f"{history.get('skill_release_bonus', 0)} 💎"
-                    },
-                    {
-                        'component': 'td',
-                        'props': {
-                            'class': 'text-high-emphasis'
-                        },
-                        'text': f"{history.get('bonus', 0)} 💎"
-                    }
-                ]
-            } for history in historys
-        ]
+        # 准备图表数据
+        chart_data = []
+        for history in historys:
+            chart_data.append({
+                'date': history.get('date'),
+                'bonus': history.get('bonus', 0),
+                'skill_bonus': history.get('skill_release_bonus', 0)
+            })
+
+        # 反转数据以便按时间顺序显示
+        chart_data.reverse()
 
         # 拼装页面
         return [
+            # 趋势卡片
             {
                 'component': 'VCard',
                 'props': {
-                    'variant': 'outlined',
-                    'class': 'ma-0 pa-0 elevation-0'
+                    'variant': 'flat',
+                    'class': 'mb-4'
                 },
                 'content': [
                     {
-                        'component': 'VCardTitle',
+                        'component': 'VCardItem',
                         'props': {
-                            'class': 'd-flex align-center'
+                            'class': 'pa-6'
                         },
                         'content': [
                             {
-                                'component': 'VIcon',
+                                'component': 'VCardTitle',
                                 'props': {
-                                    'style': 'color: #1976D2;',
-                                    'class': 'mr-2'
+                                    'class': 'd-flex align-center text-h6'
                                 },
-                                'text': 'mdi-history'
-                            },
-                            {
-                                'component': 'span',
-                                'text': '历史记录'
+                                'content': [
+                                    {
+                                        'component': 'VIcon',
+                                        'props': {
+                                            'color': 'primary',
+                                            'class': 'mr-3',
+                                            'size': 'default'
+                                        },
+                                        'text': 'mdi-chart-line'
+                                    },
+                                    {
+                                        'component': 'span',
+                                        'text': '灵石趋势'
+                                    }
+                                ]
                             }
                         ]
                     },
                     {
-                        'component': 'VDivider'
+                        'component': 'VCardText',
+                        'props': {
+                            'class': 'pa-6'
+                        },
+                        'content': [
+                            {
+                                'component': 'VApexChart',
+                                'props': {
+                                    'type': 'area',
+                                    'height': 300,
+                                    'options': {
+                                        'chart': {
+                                            'type': 'area',
+                                            'toolbar': {
+                                                'show': True
+                                            },
+                                            'stacked': False
+                                        },
+                                        'dataLabels': {
+                                            'enabled': False
+                                        },
+                                        'stroke': {
+                                            'curve': 'smooth',
+                                            'width': 2
+                                        },
+                                        'fill': {
+                                            'type': 'gradient',
+                                            'gradient': {
+                                                'shadeIntensity': 1,
+                                                'opacityFrom': 0.45,
+                                                'opacityTo': 0.05
+                                            }
+                                        },
+                                        'grid': {
+                                            'borderColor': 'rgba(0,0,0,0.1)',
+                                            'strokeDashArray': 6,
+                                            'xaxis': {'lines': {'show': True}},
+                                            'yaxis': {'lines': {'show': True}}
+                                        },
+                                        'xaxis': {
+                                            'categories': [item['date'].split()[0] for item in chart_data],
+                                            'labels': {
+                                                'style': {
+                                                    'fontSize': '12px'
+                                                }
+                                            }
+                                        },
+                                        'yaxis': {
+                                            'labels': {
+                                                'style': {
+                                                    'fontSize': '12px'
+                                                }
+                                            },
+                                            'forceNiceScale': True,
+                                            'min': min(float(str(item['bonus']).replace(',', '')) for item in chart_data) * 0.9999,
+                                            'max': max(float(str(item['bonus']).replace(',', '')) for item in chart_data) * 1.0001
+                                        },
+                                        'tooltip': {
+                                            'theme': 'light',
+                                            'shared': True,
+                                            'x': {
+                                                'show': True
+                                            },
+                                            'y': {
+                                                'formatter': lambda val: f"{val:.2f} 灵石"
+                                            }
+                                        }
+                                    },
+                                    'series': [
+                                        {
+                                            'name': '账户余额',
+                                            'data': [float(str(item['bonus']).replace(',', '')) for item in chart_data]
+                                        },
+                                        {
+                                            'name': '释放收益',
+                                            'data': [float(str(item['skill_bonus']).replace(',', '')) for item in chart_data]
+                                        }
+                                    ]
+                                }
+                            }
+                        ]
+                    }
+                ]
+            },
+            # 历史记录表格
+            {
+                'component': 'VCard',
+                'props': {
+                    'variant': 'flat',
+                    'class': 'mb-4'
+                },
+                'content': [
+                    {
+                        'component': 'VCardItem',
+                        'props': {
+                            'class': 'pa-6'
+                        },
+                        'content': [
+                            {
+                                'component': 'VCardTitle',
+                                'props': {
+                                    'class': 'd-flex align-center text-h6'
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VIcon',
+                                        'props': {
+                                            'color': 'primary',
+                                            'class': 'mr-3',
+                                            'size': 'default'
+                                        },
+                                        'text': 'mdi-history'
+                                    },
+                                    {
+                                        'component': 'span',
+                                        'text': '历史记录'
+                                    }
+                                ]
+                            }
+                        ]
                     },
                     {
                         'component': 'VCardText',
+                        'props': {
+                            'class': 'pa-6'
+                        },
                         'content': [
                             {
                                 'component': 'VTable',
                                 'props': {
-                                    'hover': True,
-                                    'density': 'comfortable'
+                                    'hover': True
                                 },
                                 'content': [
                                     {
@@ -1001,37 +1215,37 @@ class ZhuqueHelper(_PluginBase):
                                                     {
                                                         'component': 'th',
                                                         'props': {
-                                                            'class': 'text-start ps-4 font-weight-bold'
+                                                            'class': 'text-center text-body-1 font-weight-bold'
                                                         },
-                                                        'text': '时间'
+                                                        'text': '执行时间'
                                                     },
                                                     {
                                                         'component': 'th',
                                                         'props': {
-                                                            'class': 'text-start ps-4 font-weight-bold'
+                                                            'class': 'text-center text-body-1 font-weight-bold'
                                                         },
                                                         'text': '用户名'
                                                     },
                                                     {
                                                         'component': 'th',
                                                         'props': {
-                                                            'class': 'text-start ps-4 font-weight-bold'
+                                                            'class': 'text-center text-body-1 font-weight-bold'
                                                         },
-                                                        'text': '当前角色最低等级'
+                                                        'text': '最低等级'
                                                     },
                                                     {
                                                         'component': 'th',
                                                         'props': {
-                                                            'class': 'text-start ps-4 font-weight-bold'
+                                                            'class': 'text-center text-body-1 font-weight-bold'
                                                         },
-                                                        'text': '本次释放获得的灵石'
+                                                        'text': '释放收益'
                                                     },
                                                     {
                                                         'component': 'th',
                                                         'props': {
-                                                            'class': 'text-start ps-4 font-weight-bold'
+                                                            'class': 'text-center text-body-1 font-weight-bold'
                                                         },
-                                                        'text': '当前账户灵石余额'
+                                                        'text': '账户余额'
                                                     }
                                                 ]
                                             }
@@ -1039,7 +1253,51 @@ class ZhuqueHelper(_PluginBase):
                                     },
                                     {
                                         'component': 'tbody',
-                                        'content': sign_msgs
+                                        'content': [
+                                            {
+                                                'component': 'tr',
+                                                'props': {
+                                                    'class': 'text-sm'
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'td',
+                                                        'props': {
+                                                            'class': 'text-center text-high-emphasis'
+                                                        },
+                                                        'text': history.get("date")
+                                                    },
+                                                    {
+                                                        'component': 'td',
+                                                        'props': {
+                                                            'class': 'text-center text-high-emphasis'
+                                                        },
+                                                        'text': history.get("username")
+                                                    },
+                                                    {
+                                                        'component': 'td',
+                                                        'props': {
+                                                            'class': 'text-center text-high-emphasis'
+                                                        },
+                                                        'text': history.get("min_level")
+                                                    },
+                                                    {
+                                                        'component': 'td',
+                                                        'props': {
+                                                            'class': 'text-center text-high-emphasis'
+                                                        },
+                                                        'text': f"{history.get('skill_release_bonus', 0)} 💎"
+                                                    },
+                                                    {
+                                                        'component': 'td',
+                                                        'props': {
+                                                            'class': 'text-center text-high-emphasis'
+                                                        },
+                                                        'text': f"{history.get('bonus', 0)} 💎"
+                                                    }
+                                                ]
+                                            } for history in historys
+                                        ]
                                     }
                                 ]
                             },
