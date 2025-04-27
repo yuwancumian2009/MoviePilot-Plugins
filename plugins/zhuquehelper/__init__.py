@@ -22,7 +22,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.2.8"
+    plugin_version = "1.2.9"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -1091,6 +1091,7 @@ class ZhuqueHelper(_PluginBase):
                                             },
                                             'stacked': False
                                         },
+                                        'colors': ['#2E93fA', '#66DA26'],
                                         'dataLabels': {
                                             'enabled': False
                                         },
@@ -1103,7 +1104,8 @@ class ZhuqueHelper(_PluginBase):
                                             'gradient': {
                                                 'shadeIntensity': 1,
                                                 'opacityFrom': 0.45,
-                                                'opacityTo': 0.05
+                                                'opacityTo': 0.05,
+                                                'stops': [0, 90, 100]
                                             }
                                         },
                                         'grid': {
@@ -1120,16 +1122,33 @@ class ZhuqueHelper(_PluginBase):
                                                 }
                                             }
                                         },
-                                        'yaxis': {
-                                            'labels': {
-                                                'style': {
-                                                    'fontSize': '12px'
+                                        'yaxis': [
+                                            {
+                                                'title': {
+                                                    'text': '账户余额'
+                                                },
+                                                'min': min(float(str(item['bonus']).replace(',', '')) for item in chart_data) * 0.9999,
+                                                'max': max(float(str(item['bonus']).replace(',', '')) for item in chart_data) * 1.0001,
+                                                'labels': {
+                                                    'style': {
+                                                        'fontSize': '12px'
+                                                    }
                                                 }
                                             },
-                                            'forceNiceScale': True,
-                                            'min': min(float(str(item['bonus']).replace(',', '')) for item in chart_data) * 0.9999,
-                                            'max': max(float(str(item['bonus']).replace(',', '')) for item in chart_data) * 1.0001
-                                        },
+                                            {
+                                                'opposite': True,
+                                                'title': {
+                                                    'text': '释放收益'
+                                                },
+                                                'min': min(float(str(item['skill_bonus']).replace(',', '')) for item in chart_data) * 0.9,
+                                                'max': max(float(str(item['skill_bonus']).replace(',', '')) for item in chart_data) * 1.1,
+                                                'labels': {
+                                                    'style': {
+                                                        'fontSize': '12px'
+                                                    }
+                                                }
+                                            }
+                                        ],
                                         'tooltip': {
                                             'theme': 'light',
                                             'shared': True,
