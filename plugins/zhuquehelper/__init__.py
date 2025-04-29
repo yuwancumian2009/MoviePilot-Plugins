@@ -22,7 +22,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.2.9"
+    plugin_version = "1.3.0"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -1087,10 +1087,68 @@ class ZhuqueHelper(_PluginBase):
                                         'chart': {
                                             'type': 'area',
                                             'toolbar': {
-                                                'show': True
+                                                'show': True,
+                                                'tools': {
+                                                    'download': True,
+                                                    'selection': True,
+                                                    'zoom': True,
+                                                    'zoomin': True,
+                                                    'zoomout': True,
+                                                    'pan': True,
+                                                    'reset': True,
+                                                    'home': True
+                                                },
+                                                'position': 'top',
+                                                'autoSelected': 'zoom'
                                             },
                                             'stacked': False
                                         },
+                                        'responsive': [
+                                            {
+                                                'breakpoint': 740,
+                                                'options': {
+                                                    'chart': {
+                                                        'toolbar': {
+                                                            'show': False
+                                                        }
+                                                    },
+                                                    'xaxis': {
+                                                        'categories': [item['date'].split()[0].split('-')[2] + '日' for item in chart_data],
+                                                        'labels': {
+                                                            'style': {
+                                                                'fontSize': '12px'
+                                                            }
+                                                        }
+                                                    },
+                                                    'yaxis': [
+                                                        {
+                                                            'labels': {
+                                                                'show': False
+                                                            },
+                                                            'title': {
+                                                                'text': '账户余额',
+                                                                'style': {
+                                                                    'color': '#2E93fA'
+                                                                }
+                                                            },
+                                                            'opposite': False
+                                                        },
+                                                        {
+                                                            'labels': {
+                                                                'show': False
+                                                            },
+                                                            'title': {
+                                                                'text': '释放收益',
+                                                                'style': {
+                                                                    'color': '#66DA26'
+                                                                }
+                                                            },
+                                                            'opposite': True
+                                                        }
+                                                    ]
+                                                }
+                                            }
+                                        ],
                                         'colors': ['#2E93fA', '#66DA26'],
                                         'dataLabels': {
                                             'enabled': False
@@ -1119,17 +1177,27 @@ class ZhuqueHelper(_PluginBase):
                                             'labels': {
                                                 'style': {
                                                     'fontSize': '12px'
+                                                },
+                                                'datetimeFormatter': {
+                                                    'year': 'yyyy',
+                                                    'month': 'MM',
+                                                    'day': 'dd',
+                                                    'hour': 'HH:mm'
                                                 }
                                             }
                                         },
                                         'yaxis': [
                                             {
                                                 'title': {
-                                                    'text': '账户余额'
+                                                    'text': '账户余额',
+                                                    'style': {
+                                                        'color': '#2E93fA'
+                                                    }
                                                 },
                                                 'min': min(float(str(item['bonus']).replace(',', '')) for item in chart_data) * 0.9999,
                                                 'max': max(float(str(item['bonus']).replace(',', '')) for item in chart_data) * 1.0001,
                                                 'labels': {
+                                                    'show': True,
                                                     'style': {
                                                         'fontSize': '12px'
                                                     }
@@ -1138,11 +1206,15 @@ class ZhuqueHelper(_PluginBase):
                                             {
                                                 'opposite': True,
                                                 'title': {
-                                                    'text': '释放收益'
+                                                    'text': '释放收益',
+                                                    'style': {
+                                                        'color': '#66DA26'
+                                                    }
                                                 },
                                                 'min': min(float(str(item['skill_bonus']).replace(',', '')) for item in chart_data) * 0.9,
                                                 'max': max(float(str(item['skill_bonus']).replace(',', '')) for item in chart_data) * 1.1,
                                                 'labels': {
+                                                    'show': True,
                                                     'style': {
                                                         'fontSize': '12px'
                                                     }
@@ -1170,6 +1242,9 @@ class ZhuqueHelper(_PluginBase):
                                             'data': [float(str(item['skill_bonus']).replace(',', '')) for item in chart_data]
                                         }
                                     ]
+                                },
+                                'on': {
+                                    'mounted': 'function() { this.$nextTick(() => { const display = useDisplay(); this.chart.updateOptions({ yaxis: [{ labels: { show: !display.mdAndDown.value } }, { labels: { show: !display.mdAndDown.value } }] }); }) }'
                                 }
                             }
                         ]
