@@ -115,5 +115,18 @@
     "history": {
         "v1.0": "初始版本。"
     }
+  },
+  "VicomoVS": {
+    "name": "象岛传说竞技场",
+    "description": "象岛传说竞技场，对战boss。",
+    "labels": "站点",
+    "version": "1.0",
+    "icon": "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Vicomovs.png",
+    "author": "KoWming",
+    "level": 2,
+    "v2": true,
+    "history": {
+        "v1.0": "初始版本。"
+    }
   }
 }
