@@ -1,7 +1,7 @@
 import re
 import pytz
-import requests
 import time
+import requests
 
 from lxml import etree
 from datetime import datetime, timedelta
@@ -51,7 +51,7 @@ class VicomoVS(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Vicomovs.png"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.1"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -127,7 +127,6 @@ class VicomoVS(_PluginBase):
 
     def vs_boss(self):
         """对战boss"""
-
         self.vs_boss_url = self._vs_site_url + "/customgame.php?action=exchange"
         self.headers = {
             "cookie": self._cookie,
@@ -135,6 +134,7 @@ class VicomoVS(_PluginBase):
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.0"
         }
         
+        # 根据星期几选择对战模式
         if datetime.today().weekday() in [0, 2]:
             vs_boss_data = "option=1&vs_member_name=0&submit=%E9%94%8B%E8%8A%92%E4%BA%A4%E9%94%99+-+1v1"  # Monday Wednesday
         elif datetime.today().weekday() in [1, 3]:
@@ -152,15 +152,15 @@ class VicomoVS(_PluginBase):
         match = ContentFilter.re_get_match(response, r"window\.location\.href\s*=\s*'([^']+战斗结果[^']+)'")
         if match:
             redirect_url = match.group(1)
-            print(f"提取到的战斗结果重定向 URL: {redirect_url}")
+            logger.info(f"提取到的战斗结果重定向 URL: {redirect_url}")
         else:
-            print("未找到战斗结果重定向 URL")
+            logger.error("未找到战斗结果重定向 URL")
             return None
 
         # 访问重定向 URL
         battle_result_response = requests.get(redirect_url, headers=self.headers)
-        print(f"战斗结果重定向页面状态码: {battle_result_response.status_code}")
-        # print(battle_result_response.text)  # 可选：调试时查看响应内容
+        logger.info(f"战斗结果重定向页面状态码: {battle_result_response.status_code}")
+        # logger.info(battle_result_response.text)  # 可选：调试时查看响应内容
 
         # 解析战斗结果页面并提取 battleMsgInput
         parsed_html = ContentFilter.lxml_get_HTML(battle_result_response)
@@ -168,12 +168,12 @@ class VicomoVS(_PluginBase):
         if battle_msg_input:
             battle_info = parsed_html.xpath('//*[@id="battleResultStringLastShow"]/div[1]//text()')
             battle_text = ' '.join([text.strip() for text in battle_info if text.strip()])
-            print("找到Battle Info:", battle_text)
-            print("找到Battle Result:",
+            logger.info("找到Battle Info:", battle_text)
+            logger.info("找到Battle Result:",
                 parsed_html.xpath('//*[@id="battleResultStringLastShow"]/div[2]/text()')[0].strip())
             return parsed_html.xpath('//*[@id="battleResultStringLastShow"]/div[2]/text()')[0].strip()
         else:
-            print("未找到Battle Result")
+            logger.error("未找到Battle Result")
             return None
 
     def _battle_task(self):
@@ -181,6 +181,48 @@ class VicomoVS(_PluginBase):
         执行对战任务
         """
         try:
+            # 获取角色和战斗次数信息
+            char_info = self.get_character_info()
+            
+            # 检查是否有角色
+            if not char_info["has_characters"]:
+                msg = "😵‍💫你还还未获得任何角色，无法进行战斗！"
+                logger.info(msg)
+                if self._notify:
+                    self.post_message(
+                        mtype=NotificationType.SiteMessage,
+                        title="【🐘象岛传说竞技场】任务失败",
+                        text=f"━━━━━━━━━━━━━━\n"
+                             f"⚠️ 错误提示：\n"
+                             f"😵‍💫 你还还未获得任何角色，无法进行战斗！\n\n"
+                             f"━━━━━━━━━━━━━━\n"
+                             f"📌 获取角色方式：\n"
+                             f"🎰 智能扭蛋机 Plus\n"
+                             f"🎰 智能扭蛋机 Pro Max Ultra 至尊豪华Master版\n\n"
+                             f"━━━━━━━━━━━━━━\n"
+                             f"💡 提示：\n"   
+                             f"✨ 集齐10枚碎片可以获得对应角色\n\n"
+                             f"━━━━━━━━━━━━━━\n"
+                             f"📊 状态信息：\n"
+                             f"⚔️ 今日剩余战斗次数：{char_info['battles_remaining']}")
+                return
+                
+            # 检查剩余战斗次数
+            if char_info["battles_remaining"] == 0:
+                msg = "😴你今天已经战斗过了，请休息整备明天再战！"
+                logger.info(msg)
+                if self._notify:
+                    self.post_message(
+                        mtype=NotificationType.SiteMessage,
+                        title="【🐘象岛传说竞技场】任务失败",
+                        text=f"━━━━━━━━━━━━━━\n"
+                             f"⚠️ 错误提示：\n"
+                             f"😴 你今天已经战斗过了，请休息整备明天再战！\n\n"
+                             f"━━━━━━━━━━━━━━\n"
+                             f"📊 状态信息：\n"
+                             f"⚔️ 今日剩余战斗次数：{char_info['battles_remaining']}")
+                return
+
             # 开始执行对战
             logger.info("开始执行对战...")
             battle_results = []
@@ -219,7 +261,7 @@ class VicomoVS(_PluginBase):
             if self._notify:
                 self.post_message(
                     mtype=NotificationType.SiteMessage,
-                    title="【象岛传说竞技场】对战任务完成：",
+                    title="【象岛传说竞技场】任务完成：",
                     text=f"{rich_text_report}")
 
         except Exception as e:
@@ -228,16 +270,122 @@ class VicomoVS(_PluginBase):
     def generate_rich_text_report(self, battle_results: List[str]) -> str:
         """生成对战报告"""
         try:
-            report = f"对战次数：{len(battle_results)}\n"
-            report += "对战结果：\n"
+            # 获取当前对战模式
+            if datetime.today().weekday() in [0, 2]:
+                battle_mode = "⚔️ 锋芒交错 - 1v1"
+            elif datetime.today().weekday() in [1, 3]:
+                battle_mode = "🐉 龙与凤的抗衡 - 5v5"
+            elif datetime.today().weekday() in [4, 5, 6]:
+                battle_mode = "👑 世界boss - 对抗Sysrous"
             
+            # 统计信息
+            total_battles = len(battle_results)
+            victories = sum(1 for result in battle_results if "胜利" in result)
+            defeats = sum(1 for result in battle_results if "战败" in result)
+            draws = sum(1 for result in battle_results if "平局" in result)
+            total_grass = sum(int(self.parse_battle_result(result)[1]) for result in battle_results)
+            
+            # 生成报告
+            report = f"━━━━━━━━━━━━━━\n"
+            report += f"🎮 对战模式：\n"
+            report += f"{battle_mode}\n\n"
+            
+            report += f"━━━━━━━━━━━━━━\n"
+            report += f"🎯 对战统计：\n"
+            report += f"⚔️ 总对战次数：{total_battles}\n"
+            report += f"🏆 胜利场次：{victories}\n"
+            report += f"💔 战败场次：{defeats}\n"
+            report += f"🤝 平局场次：{draws}\n"
+            report += f"🌿 获得象草：{total_grass}\n\n"
+            
+            report += f"━━━━━━━━━━━━━━\n"
+            report += f"📊 详细战报：\n"
             for i, result in enumerate(battle_results, 1):
-                report += f"第 {i} 次：{result}\n"
+                status, grass = self.parse_battle_result(result)
+                status_emoji = "🏆" if status == "胜利" else "💔" if status == "战败" else "🤝"
+                report += f"第 {i} 场：{status_emoji} {status} | 🌿 {grass}象草\n"
             
             return report
         except Exception as e:
             logger.error(f"生成报告时发生异常: {e}")
             return "象岛传说竞技场\n生成报告时发生错误，请检查日志以获取更多信息。"
+        
+    def parse_battle_result(self, result: str) -> Tuple[str, str]:
+        """
+        解析战斗结果，提取战斗状态和象草数量
+        """
+        # 提取战斗状态
+        if "战败" in result:
+            status = "战败"
+        elif "胜利" in result:
+            status = "胜利"
+        elif "平局" in result:
+            status = "平局"
+        else:
+            status = "未知"
+            
+        # 提取象草数量
+        grass_match = re.search(r"(\d+)象草", result)
+        grass_amount = grass_match.group(1) if grass_match else "0"
+        
+        return status, grass_amount
+
+    def get_character_info(self) -> Dict[str, Any]:
+        """
+        获取英灵殿角色名称列表和剩余战斗次数
+        返回:
+            Dict[str, Any]: 包含以下信息的字典:
+            - has_characters: bool, 是否拥有任何角色
+            - character_names: List[str], 角色名称列表
+            - battles_remaining: int, 今日剩余战斗次数
+        """
+        try:
+            # 获取页面内容
+            url = f"{self._vs_site_url}/customgame.php"
+            headers = {
+                "cookie": self._cookie,
+                "referer": self._vs_site_url,
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.0"
+            }
+            response = requests.get(url, headers=headers)
+            
+            # 解析页面
+            html = ContentFilter.lxml_get_HTML(response)
+            
+            # 获取所有角色名称
+            character_names = []
+            character_divs = html.xpath('//div[@class="member"]')
+            
+            # for div in character_divs:
+                # 获取角色基本信息文本
+                # info_text = " ".join(div.xpath('.//div[@class="memberText"]//text()'))
+                
+                # 解析角色名称 - 在memberText div中的第一个文本内容就是角色名称
+                # name = div.xpath('.//div[@class="memberText"]/text()')[0].strip()
+                # if name:
+                #     character_names.append(name)
+            
+            # 获取剩余战斗次数 - 在vs_submit按钮的文本中
+            battles_text = html.xpath('//b[contains(text(), "今日剩余战斗次数")]')
+            battles_remaining = 0
+            if battles_text:
+                match = re.search(r"今日剩余战斗次数:\s*(\d+)", battles_text[0].text)
+                if match:
+                    battles_remaining = int(match.group(1))
+            
+            return {
+                "has_characters": len(character_divs) > 0,
+                "character_names": character_names,
+                "battles_remaining": battles_remaining
+            }
+            
+        except Exception as e:
+            logger.error(f"获取角色名称和战斗次数失败: {str(e)}")
+            return {
+                "has_characters": False,
+                "character_names": [],
+                "battles_remaining": 0
+            }
 
     def get_state(self) -> bool:
         """获取插件状态"""
@@ -857,130 +1005,45 @@ class VicomoVS(_PluginBase):
                             {
                                 'component': 'VApexChart',
                                 'props': {
-                                    'type': 'area',
+                                    'type': 'line',
                                     'height': 300,
                                     'options': {
                                         'chart': {
-                                            'type': 'area',
-                                            'toolbar': {
-                                                'show': True,
-                                                'tools': {
-                                                    'download': True,
-                                                    'selection': True,
-                                                    'zoom': True,
-                                                    'zoomin': True,
-                                                    'zoomout': True,
-                                                    'pan': True,
-                                                    'reset': True,
-                                                    'home': True
-                                                },
-                                                'position': 'top',
-                                                'autoSelected': 'zoom'
-                                            },
-                                            'stacked': False
-                                        },
-                                        'responsive': [
-                                            {
-                                                'breakpoint': 740,
-                                                'options': {
-                                                    'chart': {
-                                                        'toolbar': {
-                                                            'show': False
-                                                        }
-                                                    },
-                                                    'xaxis': {
-                                                        'categories': [item['date'].split()[0].split('-')[2] + '日' for item in chart_data],
-                                                        'labels': {
-                                                            'style': {
-                                                                'fontSize': '12px'
-                                                            }
-                                                        }
-                                                    },
-                                                    'yaxis': {
-                                                        'labels': {
-                                                            'show': False
-                                                        },
-                                                        'title': {
-                                                            'text': '获得象草',
-                                                            'style': {
-                                                                'color': '#66DA26'
-                                                            }
-                                                        }
-                                                    }
-                                                }
+                                            'type': 'line',
+                                            'zoom': {
+                                                'enabled': True
                                             }
-                                        ],
-                                        'colors': ['#66DA26'],
-                                        'dataLabels': {
-                                            'enabled': False
                                         },
                                         'stroke': {
                                             'curve': 'smooth',
                                             'width': 2
                                         },
-                                        'fill': {
-                                            'type': 'gradient',
-                                            'gradient': {
-                                                'shadeIntensity': 1,
-                                                'opacityFrom': 0.45,
-                                                'opacityTo': 0.05,
-                                                'stops': [0, 90, 100]
-                                            }
+                                        'markers': {
+                                            'size': 4
                                         },
-                                        'grid': {
-                                            'borderColor': 'rgba(0,0,0,0.1)',
-                                            'strokeDashArray': 6,
-                                            'xaxis': {'lines': {'show': True}},
-                                            'yaxis': {'lines': {'show': True}}
-                                        },
+                                        'colors': ['#66DA26'],
                                         'xaxis': {
-                                            'categories': [item['date'].split()[0] for item in chart_data],
+                                            'categories': [f"{history.get('date').split()[0].split('-')[2]}日第{idx+1}次" 
+                                                         for history in historys 
+                                                         for idx, _ in enumerate(history.get("battle_results", []))],
                                             'labels': {
                                                 'style': {
                                                     'fontSize': '12px'
-                                                },
-                                                'datetimeFormatter': {
-                                                    'year': 'yyyy',
-                                                    'month': 'MM',
-                                                    'day': 'dd',
-                                                    'hour': 'HH:mm'
                                                 }
                                             }
                                         },
                                         'yaxis': {
                                             'title': {
-                                                'text': '获得象草',
-                                                'style': {
-                                                    'color': '#66DA26'
-                                                }
-                                            },
-                                            'labels': {
-                                                'show': True,
-                                                'style': {
-                                                    'fontSize': '12px'
-                                                }
-                                            }
-                                        },
-                                        'tooltip': {
-                                            'theme': 'light',
-                                            'shared': True,
-                                            'x': {
-                                                'show': True
-                                            },
-                                            'y': {
-                                                'formatter': lambda val: f"{val} 个"
+                                                'text': '象草数量'
                                             }
                                         }
                                     },
                                     'series': [
                                         {
                                             'name': '获得象草',
-                                            'data': [sum(1 for result in history.get("battle_results", []) if "象草" in result) for history in chart_data]
+                                            'data': [int(self.parse_battle_result(result)[1]) for history in historys for result in history.get("battle_results", [])]
                                         }
                                     ]
-                                },
-                                'on': {
-                                    'mounted': 'function() { this.$nextTick(() => { const display = useDisplay(); this.chart.updateOptions({ yaxis: [{ labels: { show: !display.mdAndDown.value } }] }); }) }'
                                 }
                             }
                         ]
@@ -1095,24 +1158,24 @@ class VicomoVS(_PluginBase):
                                                         'props': {
                                                             'class': 'text-center text-high-emphasis'
                                                         },
-                                                        'text': len(history.get("battle_results", []))
+                                                        'text': f"第{idx + 1}次"
                                                     },
                                                     {
                                                         'component': 'td',
                                                         'props': {
                                                             'class': 'text-center text-high-emphasis'
                                                         },
-                                                        'text': "、".join(history.get("battle_results", []))
+                                                        'text': self.parse_battle_result(result)[0]
                                                     },
                                                     {
                                                         'component': 'td',
                                                         'props': {
                                                             'class': 'text-center text-high-emphasis'
                                                         },
-                                                        'text': sum(1 for result in history.get("battle_results", []) if "象草" in result)
+                                                        'text': self.parse_battle_result(result)[1]
                                                     }
                                                 ]
-                                            } for history in historys
+                                            } for history in historys for idx, result in enumerate(history.get("battle_results", []))
                                         ]
                                     }
                                 ]
@@ -1122,7 +1185,7 @@ class VicomoVS(_PluginBase):
                                 'props': {
                                     'class': 'text-caption text-grey mt-2'
                                 },
-                                'text': f'共显示 {len(historys)} 条记录'
+                                'text': f'共显示 {sum(len(history.get("battle_results", [])) for history in historys)} 条记录'
                             }
                         ]
                     }
