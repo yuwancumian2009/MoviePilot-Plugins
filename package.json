@@ -129,5 +129,18 @@
         "v1.1": "修复历史记录页面显示，新增角色池判断、对战次数判断，优化消息输出格式。",
         "v1.0": "初始版本。"
     }
+  },
+  "ZmedalRwd": {
+    "name": "织梦勋章套装奖励",
+    "description": "领取勋章套装奖励。",
+    "labels": "站点",
+    "version": "1.0",
+    "icon": "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zmpt.png",
+    "author": "KoWming",
+    "level": 2,
+    "v2": true,
+    "history": {
+        "v1.0": "初始版本。"
+    }
   }
 }
