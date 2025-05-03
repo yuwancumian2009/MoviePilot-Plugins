@@ -9,7 +9,6 @@ def form(site_options) -> list:
                 {
                     'component': 'VCard',
                     'props': {
-                        'variant': 'outlined',
                         'class': 'mt-0'
                     },
                     'content': [
@@ -22,7 +21,7 @@ def form(site_options) -> list:
                                 {
                                     'component': 'VIcon',
                                     'props': {
-                                        'style': 'color: #1976D2;',
+                                        'style': 'color: #16b1ff;',
                                         'class': 'mr-2'
                                     },
                                     'text': 'mdi-cog'
@@ -99,7 +98,6 @@ def form(site_options) -> list:
                 {
                     'component': 'VCard',
                     'props': {
-                        'variant': 'outlined',
                         'class': 'mt-3'
                     },
                     'content': [
@@ -112,7 +110,7 @@ def form(site_options) -> list:
                                 {
                                     'component': 'VIcon',
                                     'props': {
-                                        'style': 'color: #1976D2;',
+                                        'style': 'color: #16b1ff;',
                                         'class': 'mr-2'
                                     },
                                     'text': 'mdi-clock-outline'
@@ -201,7 +199,6 @@ def form(site_options) -> list:
                 {
                     'component': 'VCard',
                     'props': {
-                        'variant': 'outlined',
                         'class': 'mt-3'
                     },
                     'content': [
@@ -214,7 +211,7 @@ def form(site_options) -> list:
                                 {
                                     'component': 'VIcon',
                                     'props': {
-                                        'style': 'color: #1976D2;',
+                                        'style': 'color: #16b1ff;',
                                         'class': 'mr-2'
                                     },
                                     'text': 'mdi-web'
@@ -309,6 +306,8 @@ def form(site_options) -> list:
                                                         'placeholder': '每一行一个配置，配置方式：\n'
                                                                         '站点名称|消息内容1|消息内容2|消息内容3|...\n'
                                                                         '同名站点消息配置多行支持消息合并。\n'
+                                                                        '织梦站点消息配置建议将求电力放到最后面：\n'
+                                                                        '织梦|消息内容1|消息内容2|...|皮总，求电力\n'
                                                     }
                                                 }
                                             ]
@@ -322,7 +321,6 @@ def form(site_options) -> list:
                 {
                     'component': 'VCard',
                     'props': {
-                        'variant': 'outlined',
                         'class': 'mt-3'
                     },
                     'content': [
@@ -335,68 +333,7 @@ def form(site_options) -> list:
                                 {
                                     'component': 'VIcon',
                                     'props': {
-                                        'style': 'color: #1976D2;',
-                                        'class': 'mr-2'
-                                    },
-                                    'text': 'mdi-star-face'
-                                },
-                                {
-                                    'component': 'span',
-                                    'text': '任务系统'
-                                }
-                            ]
-                        },
-                        {
-                            'component': 'VDivider'
-                        },
-                        {
-                            'component': 'VCardText',
-                            'content': [
-                                {
-                                    'component': 'VRow',
-                                    'content': [
-                                        {
-                                            'component': 'VCol',
-                                            'props': {
-                                                'cols': 12,
-                                                'md': 4
-                                            },
-                                            'content': [
-                                                {
-                                                    'component': 'VSwitch',
-                                                    'props': {
-                                                        'model': 'medal_bonus',
-                                                        'label': '织梦勋章套装奖励',
-                                                        'hint': '该功能正在开发中,进度50%',
-                                                        'persistent-hint': True,
-                                                        'disabled': True
-                                                    }
-                                                }
-                                            ]
-                                        }
-                                    ]
-                                }
-                            ]
-                        }
-                    ]
-                },
-                {
-                    'component': 'VCard',
-                    'props': {
-                        'variant': 'outlined',
-                        'class': 'mt-3'
-                    },
-                    'content': [
-                        {
-                            'component': 'VCardTitle',
-                            'props': {
-                                'class': 'd-flex align-center'
-                            },
-                            'content': [
-                                {
-                                    'component': 'VIcon',
-                                    'props': {
-                                        'style': 'color: #1976D2;',
+                                        'style': 'color: #16b1ff;',
                                         'class': 'mr-2'
                                     },
                                     'text': 'mdi-information'
@@ -412,29 +349,41 @@ def form(site_options) -> list:
                         },
                         {
                             'component': 'VCardText',
+                            'props': {
+                                'class': 'pt-4 pb-4',
+                                'style': 'font-size: 1rem;'
+                            },
                             'content': [
                                 {
-                                    'component': 'VAlert',
+                                    'component': 'div',
                                     'props': {
-                                        'type': 'info',
-                                        'variant': 'tonal',
-                                        'class': 'mt-1',
-                                        'text': '执行周期支持：'
-                                                '1、5位cron表达式；'
-                                                '2、配置间隔（小时），如2.3/9-23（9-23点之间每隔2.3小时执行一次）；'
-                                                '3、周期不填默认9-23点随机执行1次。'
-                                    }
+                                        'class': 'mb-5',
+                                        'style': 'color: #444;'
+                                    },
+                                    'content': [
+                                        {'component': 'div', 'style': 'display: flex; align-items: center; font-weight: bold; font-size: 1.1rem; margin-bottom: 8px; color: #6E7B8B;', 'content': [
+                                            {'component': 'VIcon', 'props': {'style': 'margin-right: 8px; color: #6E7B8B; font-size: 22px;'}, 'text': 'mdi-calendar-clock'},
+                                            {'component': 'span', 'text': '执行周期支持以下三种方式：'}
+                                        ]},
+                                        {'component': 'div', 'props': {'class': 'mb-2 text-body-2', 'style': 'color: #888; margin-left: 38px; font-size: 0.98em;'}, 'text': '📅 5位cron表达式'},
+                                        {'component': 'div', 'props': {'class': 'mb-2 text-body-2', 'style': 'color: #888; margin-left: 38px; font-size: 0.98em;'}, 'text': '⏰ 配置间隔（小时），如2.3/9-23（9-23点之间每隔2.3小时执行一次）'},
+                                        {'component': 'div', 'props': {'class': 'text-body-2', 'style': 'color: #888; margin-left: 38px; font-size: 0.98em;'}, 'text': '🔄 周期不填默认9-23点随机执行1次'}
+                                    ]
                                 },
                                 {
-                                    'component': 'VAlert',
+                                    'component': 'div',
                                     'props': {
-                                        'type': 'info',
-                                        'variant': 'tonal',
-                                        'class': 'mt-2',
-                                        'text': '获取反馈功能说明：'
-                                                '1、获取喊话后的站点反馈(奖励信息)，有助于了解站点对喊话的响应情况；'
-                                                '2、反馈信息包括奖励类型、数量和时间，有助于分析站点奖励机制。'
-                                    }
+                                        'class': 'mb-2',
+                                        'style': 'color: #444;'
+                                    },
+                                    'content': [
+                                        {'component': 'div', 'style': 'display: flex; align-items: center; font-weight: bold; font-size: 1.1rem; margin-bottom: 8px; color: #6E7B8B;', 'content': [
+                                            {'component': 'VIcon', 'props': {'style': 'margin-right: 8px; color: #6E7B8B; font-size: 22px;'}, 'text': 'mdi-message-reply-text'},
+                                            {'component': 'span', 'text': '获取反馈功能说明：'}
+                                        ]},
+                                        {'component': 'div', 'props': {'class': 'mb-2 text-body-2', 'style': 'color: #888; margin-left: 38px; font-size: 0.98em;'}, 'text': '📊 获取喊话后的站点反馈(奖励信息)，有助于了解站点对喊话的响应情况'},
+                                        {'component': 'div', 'props': {'class': 'text-body-2', 'style': 'color: #888; margin-left: 38px; font-size: 0.98em;'}, 'text': '📈 反馈信息包括奖励类型、数量和时间，有助于分析站点奖励机制'}
+                                    ]
                                 }
                             ]
                         }
