@@ -51,7 +51,7 @@ class VicomoVS(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Vicomovs.png"
     # 插件版本
-    plugin_version = "1.1"
+    plugin_version = "1.2"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -64,9 +64,13 @@ class VicomoVS(_PluginBase):
     auth_level = 2
 
     # 私有属性
-    _enabled: bool = False
-    _onlyonce: bool = False
-    _notify: bool = False
+    _enabled: bool = False  # 是否启用插件
+    _onlyonce: bool = False  # 是否仅运行一次
+    _notify: bool = False  # 是否开启通知
+    _use_proxy: bool = True  # 是否使用代理，默认启用
+    _retry_count: int = 2  # 失败重试次数
+    _daily_battle_count: int = 0  # 当天战斗次数计数器
+    _last_battle_date: str = ""  # 最后战斗日期
 
     # 任务执行间隔
     _cron: Optional[str] = None
@@ -97,6 +101,12 @@ class VicomoVS(_PluginBase):
             self._history_count = int(config.get("history_count", 10))
             self._vs_boss_count = int(config.get("vs_boss_count", 3))
             self._vs_boss_interval = int(config.get("vs_boss_interval", 15))
+            self._use_proxy = config.get("use_proxy", True)
+            self._retry_count = int(config.get("retry_count", 2))
+            
+            # 初始化战斗次数
+            self._daily_battle_count = self.get_data('daily_battle_count') or 0
+            self._last_battle_date = self.get_data('last_battle_date') or ""
 
         if self._onlyonce:
             try:
@@ -115,7 +125,9 @@ class VicomoVS(_PluginBase):
                     "notify": self._notify,
                     "history_count": self._history_count,
                     "vs_boss_count": self._vs_boss_count,
-                    "vs_boss_interval": self._vs_boss_interval
+                    "vs_boss_interval": self._vs_boss_interval,
+                    "use_proxy": self._use_proxy,
+                    "retry_count": self._retry_count
                 })
 
                 # 启动任务
@@ -134,6 +146,9 @@ class VicomoVS(_PluginBase):
             "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36 Edg/132.0.0.0"
         }
         
+        # 获取代理设置
+        proxies = self._get_proxies()
+        
         # 根据星期几选择对战模式
         if datetime.today().weekday() in [0, 2]:
             vs_boss_data = "option=1&vs_member_name=0&submit=%E9%94%8B%E8%8A%92%E4%BA%A4%E9%94%99+-+1v1"  # Monday Wednesday
@@ -145,7 +160,7 @@ class VicomoVS(_PluginBase):
             "content-type": "application/x-www-form-urlencoded",
             "pragma": "no-cache",
         })
-        response = requests.post(self.vs_boss_url, headers=self.headers, data=vs_boss_data)
+        response = requests.post(self.vs_boss_url, headers=self.headers, data=vs_boss_data, proxies=proxies)
 
         # 从响应中提取重定向 URL
         redirect_url = None
@@ -181,6 +196,16 @@ class VicomoVS(_PluginBase):
         执行对战任务
         """
         try:
+            # 获取当前日期
+            current_date = datetime.today().strftime('%Y-%m-%d')
+            
+            # 检查是否需要重置当天战斗次数
+            if self._last_battle_date != current_date:
+                self._daily_battle_count = 0
+                self._last_battle_date = current_date
+                self.save_data('daily_battle_count', self._daily_battle_count)
+                self.save_data('last_battle_date', self._last_battle_date)
+            
             # 获取角色和战斗次数信息
             char_info = self.get_character_info()
             
@@ -227,11 +252,28 @@ class VicomoVS(_PluginBase):
             logger.info("开始执行对战...")
             battle_results = []
             for i in range(self._vs_boss_count):
-                logger.info(f"执行第 {i+1} 次对战")
-                battle_result = self.vs_boss()
+                # 更新当天战斗次数
+                self._daily_battle_count += 1
+                self.save_data('daily_battle_count', self._daily_battle_count)
+                
+                logger.info(f"执行第 {self._daily_battle_count} 次对战")
+                battle_result = None
+                for attempt in range(self._retry_count + 1):
+                    try:
+                        battle_result = self.vs_boss()
+                        if battle_result:
+                            break
+                        else:
+                            raise Exception("对战结果为空")
+                    except Exception as e:
+                        logger.error(f"第{self._daily_battle_count}次对战第{attempt+1}次尝试失败: {e}")
+                        if attempt < self._retry_count:
+                            time.sleep(2)  # 每次重试间隔2秒
+                        else:
+                            logger.error(f"第{self._daily_battle_count}次对战重试已达上限({self._retry_count})，放弃本次对战")
                 if battle_result:
                     battle_results.append(battle_result)
-                    logger.info(f"第 {i+1} 次对战结果：{battle_result}")
+                    logger.info(f"第 {self._daily_battle_count} 次对战结果：{battle_result}")
                 if i < self._vs_boss_count - 1:  # 如果不是最后一次对战
                     logger.info(f"等待 {self._vs_boss_interval} 秒后执行下一次对战")
                     time.sleep(self._vs_boss_interval)
@@ -244,7 +286,8 @@ class VicomoVS(_PluginBase):
             # 保存历史记录
             sign_dict = {
                 "date": datetime.today().strftime('%Y-%m-%d %H:%M:%S'),
-                "battle_results": battle_results
+                "battle_results": battle_results,
+                "battle_count": self._daily_battle_count - len(battle_results) + 1  # 记录本次战斗的起始次数
             }
 
             # 读取历史记录
@@ -300,7 +343,7 @@ class VicomoVS(_PluginBase):
             
             report += f"━━━━━━━━━━━━━━\n"
             report += f"📊 详细战报：\n"
-            for i, result in enumerate(battle_results, 1):
+            for i, result in enumerate(battle_results, self._daily_battle_count - len(battle_results) + 1):
                 status, grass = self.parse_battle_result(result)
                 status_emoji = "🏆" if status == "胜利" else "💔" if status == "战败" else "🤝"
                 report += f"第 {i} 场：{status_emoji} {status} | 🌿 {grass}象草\n"
@@ -386,6 +429,26 @@ class VicomoVS(_PluginBase):
                 "character_names": [],
                 "battles_remaining": 0
             }
+
+    def _get_proxies(self):
+        """
+        获取代理设置
+        """
+        if not self._use_proxy:
+            logger.info("未启用代理")
+            return None
+            
+        try:
+            # 获取系统代理设置
+            if hasattr(settings, 'PROXY') and settings.PROXY:
+                logger.info(f"使用系统代理: {settings.PROXY}")
+                return settings.PROXY
+            else:
+                logger.warning("系统代理未配置")
+                return None
+        except Exception as e:
+            logger.error(f"获取代理设置出错: {str(e)}")
+            return None
 
     def get_state(self) -> bool:
         """获取插件状态"""
@@ -476,7 +539,7 @@ class VicomoVS(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'sm': 4
+                                                    'sm': 3
                                                 },
                                                 'content': [
                                                     {
@@ -494,7 +557,7 @@ class VicomoVS(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'sm': 4
+                                                    'sm': 3
                                                 },
                                                 'content': [
                                                     {
@@ -512,7 +575,25 @@ class VicomoVS(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'sm': 4
+                                                    'sm': 3
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSwitch',
+                                                        'props': {
+                                                            'model': 'use_proxy',
+                                                            'label': '开启代理',
+                                                            'color': 'primary',
+                                                            'hide-details': True
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'sm': 3
                                                 },
                                                 'content': [
                                                     {
@@ -594,6 +675,7 @@ class VicomoVS(_PluginBase):
                                                             'variant': 'outlined',
                                                             'color': 'primary',
                                                             'hide-details': True,
+                                                            'placeholder': '🐘站点Cookie',
                                                             'class': 'mt-2'
                                                         }
                                                     }
@@ -610,7 +692,7 @@ class VicomoVS(_PluginBase):
                                                         'component': 'VTextField',
                                                         'props': {
                                                             'model': 'cron',
-                                                            'label': '签到周期(cron)',
+                                                            'label': '执行周期(cron)',
                                                             'variant': 'outlined',
                                                             'color': 'primary',
                                                             'hide-details': True,
@@ -629,7 +711,7 @@ class VicomoVS(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'sm': 4
+                                                    'sm': 3
                                                 },
                                                 'content': [
                                                     {
@@ -640,6 +722,7 @@ class VicomoVS(_PluginBase):
                                                             'variant': 'outlined',
                                                             'color': 'primary',
                                                             'hide-details': True,
+                                                            'hint': '对战次数',
                                                             'class': 'mt-2',
                                                             'items': [
                                                                 {'title': '1次', 'value': 1},
@@ -654,7 +737,7 @@ class VicomoVS(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'sm': 4
+                                                    'sm': 3
                                                 },
                                                 'content': [
                                                     {
@@ -665,7 +748,7 @@ class VicomoVS(_PluginBase):
                                                             'variant': 'outlined',
                                                             'color': 'primary',
                                                             'hide-details': True,
-                                                            'placeholder': '对战间隔(秒)',
+                                                            'hint': '对战间隔',
                                                             'class': 'mt-2',
                                                             'items': [
                                                                 {'title': '5秒', 'value': 5},
@@ -681,7 +764,35 @@ class VicomoVS(_PluginBase):
                                                 'component': 'VCol',
                                                 'props': {
                                                     'cols': 12,
-                                                    'sm': 4
+                                                    'sm': 3
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSelect',
+                                                        'props': {
+                                                            'model': 'retry_count',
+                                                            'label': '失败重试次数',
+                                                            'type': 'number',
+                                                            'variant': 'outlined',
+                                                            'color': 'primary',
+                                                            'hide-details': True,
+                                                            'hint': '为0时，不重试',
+                                                            'class': 'mt-2',
+                                                            'items': [
+                                                                {'title': '关闭', 'value': 0},
+                                                                {'title': '1次', 'value': 1},
+                                                                {'title': '2次', 'value': 2},
+                                                                {'title': '3次', 'value': 3}
+                                                            ]
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'sm': 3
                                                 },
                                                 'content': [
                                                     {
@@ -758,25 +869,25 @@ class VicomoVS(_PluginBase):
                                                 'props': {
                                                     'class': 'mb-4'
                                                 },
-                                                'text': '每人每天拥有三次参战机会，每场战斗最长持续30回合，击溃敌方全体角色获得胜利。'
+                                                'text': '🎮 每人每天拥有三次参战机会，每场战斗最长持续30回合，击溃敌方全体角色获得胜利。'
                                             },
                                             {
                                                 'component': 'div',
                                                 'props': {
                                                     'class': 'mb-4'
                                                 },
-                                                'text': '周一和周三是锋芒交错的时刻，1v1的激烈对决等着您。'
+                                                'text': '⚔️ 周一和周三是锋芒交错的时刻，1v1的激烈对决等着您。'
                                             },
                                             {
                                                 'component': 'div',
                                                 'props': {
                                                     'class': 'mb-4'
                                                 },
-                                                'text': '周二周四上演龙与凤的抗衡，5v5的团战战场精彩纷呈。'
+                                                'text': '🐉 周二周四上演龙与凤的抗衡，5v5的团战战场精彩纷呈。'
                                             },
                                             {
                                                 'component': 'div',
-                                                'text': '周五、周六和周日，世界boss【Sysrous】将会降临，勇士们齐心协力，挑战最强BOSS，获得奖励Sysrous魔力/200000+总伤害/4的象草。'
+                                                'text': '👑 周五、周六和周日，世界boss【Sysrous】将会降临，勇士们齐心协力，挑战最强BOSS，获得奖励Sysrous魔力/200000+总伤害/4的象草。'
                                             }
                                         ]
                                     }
@@ -790,11 +901,13 @@ class VicomoVS(_PluginBase):
             "enabled": False,
             "onlyonce": False,
             "notify": False,
+            "use_proxy": True,
             "cookie": "",
             "history_count": 10,
             "cron": "0 9 * * *",
             "vs_boss_count": 3,
-            "vs_boss_interval": 15
+            "vs_boss_interval": 15,
+            "retry_count": 2
         }
 
     def get_page(self) -> List[dict]:
@@ -828,38 +941,10 @@ class VicomoVS(_PluginBase):
                                                 'class': 'mr-3',
                                                 'size': 'default'
                                             },
-                                            'text': 'mdi-chart-line'
+                                            'text': 'mdi-database-remove'
                                         },
                                         {
                                             'component': 'span',
-                                            'text': '象草趋势'
-                                        }
-                                    ]
-                                }
-                            ]
-                        },
-                        {
-                            'component': 'VCardText',
-                            'content': [
-                                {
-                                    'component': 'div',
-                                    'props': {
-                                        'class': 'text-center py-4'
-                                    },
-                                    'content': [
-                                        {
-                                            'component': 'VIcon',
-                                            'props': {
-                                                'icon': 'mdi-database-remove',
-                                                'size': '48',
-                                                'color': 'grey'
-                                            }
-                                        },
-                                        {
-                                            'component': 'div',
-                                            'props': {
-                                                'class': 'text-subtitle-1 mt-2'
-                                            },
                                             'text': '暂无历史记录'
                                         }
                                     ]
@@ -894,43 +979,15 @@ class VicomoVS(_PluginBase):
                                         {
                                             'component': 'VIcon',
                                             'props': {
-                                                'color': 'primary',
+                                                'color': 'error',
                                                 'class': 'mr-3',
                                                 'size': 'default'
                                             },
-                                            'text': 'mdi-chart-line'
+                                            'text': 'mdi-alert-circle'
                                         },
                                         {
                                             'component': 'span',
-                                            'text': '象草趋势'
-                                        }
-                                    ]
-                                }
-                            ]
-                        },
-                        {
-                            'component': 'VCardText',
-                            'content': [
-                                {
-                                    'component': 'div',
-                                    'props': {
-                                        'class': 'text-center py-4'
-                                    },
-                                    'content': [
-                                        {
-                                            'component': 'VIcon',
-                                            'props': {
-                                                'icon': 'mdi-alert-circle',
-                                                'size': '48',
-                                                'color': 'error'
-                                            }
-                                        },
-                                        {
-                                            'component': 'div',
-                                            'props': {
-                                                'class': 'text-subtitle-1 mt-2'
-                                            },
-                                            'text': '数据格式错误，请检查日志以获取更多信息。'
+                                            'text': '数据格式错误'
                                         }
                                     ]
                                 }
@@ -945,117 +1002,14 @@ class VicomoVS(_PluginBase):
         if self._history_count:
             historys = historys[:self._history_count]
 
-        # 准备图表数据
-        chart_data = []
-        for history in historys:
-            chart_data.append({
-                'date': history.get('date'),
-                'bonus': history.get('bonus', 0),
-                'skill_bonus': history.get('skill_release_bonus', 0)
-            })
-
-        # 反转数据以便按时间顺序显示
-        chart_data.reverse()
-
-        # 拼装页面
         return [
-            # 趋势卡片
-            {
-                'component': 'VCard',
-                'props': {
-                    'variant': 'flat',
-                    'class': 'mb-4'
-                },
-                'content': [
-                    {
-                        'component': 'VCardItem',
-                        'props': {
-                            'class': 'pa-6'
-                        },
-                        'content': [
-                            {
-                                'component': 'VCardTitle',
-                                'props': {
-                                    'class': 'd-flex align-center text-h6'
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VIcon',
-                                        'props': {
-                                            'color': 'primary',
-                                            'class': 'mr-3',
-                                            'size': 'default'
-                                        },
-                                        'text': 'mdi-chart-line'
-                                    },
-                                    {
-                                        'component': 'span',
-                                        'text': '象草趋势'
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VCardText',
-                        'props': {
-                            'class': 'pa-6'
-                        },
-                        'content': [
-                            {
-                                'component': 'VApexChart',
-                                'props': {
-                                    'type': 'line',
-                                    'height': 300,
-                                    'options': {
-                                        'chart': {
-                                            'type': 'line',
-                                            'zoom': {
-                                                'enabled': True
-                                            }
-                                        },
-                                        'stroke': {
-                                            'curve': 'smooth',
-                                            'width': 2
-                                        },
-                                        'markers': {
-                                            'size': 4
-                                        },
-                                        'colors': ['#66DA26'],
-                                        'xaxis': {
-                                            'categories': [f"{history.get('date').split()[0].split('-')[2]}日第{idx+1}次" 
-                                                         for history in historys 
-                                                         for idx, _ in enumerate(history.get("battle_results", []))],
-                                            'labels': {
-                                                'style': {
-                                                    'fontSize': '12px'
-                                                }
-                                            }
-                                        },
-                                        'yaxis': {
-                                            'title': {
-                                                'text': '象草数量'
-                                            }
-                                        }
-                                    },
-                                    'series': [
-                                        {
-                                            'name': '获得象草',
-                                            'data': [int(self.parse_battle_result(result)[1]) for history in historys for result in history.get("battle_results", [])]
-                                        }
-                                    ]
-                                }
-                            }
-                        ]
-                    }
-                ]
-            },
             # 历史记录表格
             {
                 'component': 'VCard',
                 'props': {
                     'variant': 'flat',
-                    'class': 'mb-4'
+                    'class': 'mb-4 elevation-2',
+                    'style': 'border-radius: 16px;'
                 },
                 'content': [
                     {
@@ -1073,7 +1027,7 @@ class VicomoVS(_PluginBase):
                                     {
                                         'component': 'VIcon',
                                         'props': {
-                                            'color': 'primary',
+                                            'style': 'color: #9155fd;',
                                             'class': 'mr-3',
                                             'size': 'default'
                                         },
@@ -1096,7 +1050,9 @@ class VicomoVS(_PluginBase):
                             {
                                 'component': 'VTable',
                                 'props': {
-                                    'hover': True
+                                    'hover': True,
+                                    'density': 'comfortable',
+                                    'class': 'rounded-lg'
                                 },
                                 'content': [
                                     {
@@ -1110,28 +1066,40 @@ class VicomoVS(_PluginBase):
                                                         'props': {
                                                             'class': 'text-center text-body-1 font-weight-bold'
                                                         },
-                                                        'text': '执行时间'
+                                                        'content': [
+                                                            {'component': 'VIcon', 'props': {'style': 'color: #1976d2;', 'size': 'small', 'class': 'mr-1'}, 'text': 'mdi-clock-time-four-outline'},
+                                                            {'component': 'span', 'text': '执行时间'}
+                                                        ]
                                                     },
                                                     {
                                                         'component': 'th',
                                                         'props': {
                                                             'class': 'text-center text-body-1 font-weight-bold'
                                                         },
-                                                        'text': '战斗次数'
+                                                        'content': [
+                                                            {'component': 'VIcon', 'props': {'style': 'color: #1976d2;', 'size': 'small', 'class': 'mr-1'}, 'text': 'mdi-counter'},
+                                                            {'component': 'span', 'text': '战斗场次'}
+                                                        ]
                                                     },
                                                     {
                                                         'component': 'th',
                                                         'props': {
                                                             'class': 'text-center text-body-1 font-weight-bold'
                                                         },
-                                                        'text': '战斗结果'
+                                                        'content': [
+                                                            {'component': 'VIcon', 'props': {'style': 'color: #fb8c00;', 'size': 'small', 'class': 'mr-1'}, 'text': 'mdi-sword-cross'},
+                                                            {'component': 'span', 'text': '战斗结果'}
+                                                        ]
                                                     },
                                                     {
                                                         'component': 'th',
                                                         'props': {
                                                             'class': 'text-center text-body-1 font-weight-bold'
                                                         },
-                                                        'text': '获得象草'
+                                                        'content': [
+                                                            {'component': 'VIcon', 'props': {'color': 'success', 'size': 'small', 'class': 'mr-1'}, 'text': 'mdi-leaf'},
+                                                            {'component': 'span', 'text': '获得象草'}
+                                                        ]
                                                     }
                                                 ]
                                             }
@@ -1151,28 +1119,51 @@ class VicomoVS(_PluginBase):
                                                         'props': {
                                                             'class': 'text-center text-high-emphasis'
                                                         },
-                                                        'text': history.get("date")
+                                                        'content': [
+                                                            {'component': 'VIcon', 'props': {'style': 'color: #1976d2;', 'size': 'x-small', 'class': 'mr-1'}, 'text': 'mdi-clock-time-four-outline'},
+                                                            {'component': 'span', 'text': history.get("date", "")[:10]}
+                                                        ]
                                                     },
                                                     {
                                                         'component': 'td',
                                                         'props': {
                                                             'class': 'text-center text-high-emphasis'
                                                         },
-                                                        'text': f"第{idx + 1}次"
+                                                        'content': [
+                                                            {'component': 'VIcon', 'props': {'style': 'color: #1976d2;', 'size': 'x-small', 'class': 'mr-1'}, 'text': 'mdi-sword-cross'},
+                                                            {'component': 'span', 'text': f"第{history.get('battle_count', 1) + idx}次"}
+                                                        ]
                                                     },
                                                     {
                                                         'component': 'td',
                                                         'props': {
                                                             'class': 'text-center text-high-emphasis'
                                                         },
-                                                        'text': self.parse_battle_result(result)[0]
+                                                        'content': [
+                                                            {
+                                                                'component': 'VChip',
+                                                                'props': {
+                                                                    'color': 'success' if self.parse_battle_result(result)[0] == '胜利' else '#ffebee' if self.parse_battle_result(result)[0] == '战败' else 'info',
+                                                                    'variant': 'elevated',
+                                                                    'size': 'small',
+                                                                    'class': 'mr-1',
+                                                                },
+                                                                'content': [
+                                                                    {'component': 'span', 'text': '🏆' if self.parse_battle_result(result)[0] == '胜利' else '💔' if self.parse_battle_result(result)[0] == '战败' else '🤝'},
+                                                                    {'component': 'span', 'text': self.parse_battle_result(result)[0]}
+                                                                ]
+                                                            }
+                                                        ]
                                                     },
                                                     {
                                                         'component': 'td',
                                                         'props': {
                                                             'class': 'text-center text-high-emphasis'
                                                         },
-                                                        'text': self.parse_battle_result(result)[1]
+                                                        'content': [
+                                                            {'component': 'VIcon', 'props': {'color': 'success', 'size': 'x-small', 'class': 'mr-1'}, 'text': 'mdi-leaf'},
+                                                            {'component': 'span', 'text': self.parse_battle_result(result)[1]}
+                                                        ]
                                                     }
                                                 ]
                                             } for history in historys for idx, result in enumerate(history.get("battle_results", []))
@@ -1183,9 +1174,13 @@ class VicomoVS(_PluginBase):
                             {
                                 'component': 'div',
                                 'props': {
-                                    'class': 'text-caption text-grey mt-2'
+                                    'class': 'text-caption text-grey mt-2',
+                                    'style': 'background: #f5f5f7; border-radius: 8px; padding: 6px 12px; display: inline-block;'
                                 },
-                                'text': f'共显示 {sum(len(history.get("battle_results", [])) for history in historys)} 条记录'
+                                'content': [
+                                    {'component': 'VIcon', 'props': {'size': 'x-small', 'class': 'mr-1'}, 'text': 'mdi-format-list-bulleted'},
+                                    {'component': 'span', 'text': f'共显示 {sum(len(history.get("battle_results", [])) for history in historys)} 条记录'}
+                                ]
                             }
                         ]
                     }
