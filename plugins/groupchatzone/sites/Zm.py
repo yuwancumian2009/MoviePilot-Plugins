@@ -2,7 +2,6 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urljoin
 import re
 import time
-import requests
 from lxml import etree
 
 from app.log import logger
@@ -222,45 +221,6 @@ class ZmHandler(ISiteHandler):
         except Exception as e:
             logger.error(f"获取最新电力赠送邮件时间失败: {str(e)}")
             return None
-    
-    def medal_bonus(self) -> Tuple[bool, str]:
-        """
-        领取勋章奖励
-        :return: (是否成功, 结果信息)
-        """
-        try:
-            # 发送GET请求获取勋章奖励
-            response = self._send_get_request(self.medal_url)
-            
-            if not response:
-                logger.error("获取勋章奖励失败: 请求失败")
-                return False, "请求失败"
-                
-            # 解析返回数据
-            data = response.json()
-            if data.get("errorCode") != 0:
-                error_msg = data.get("errorMsg", "未知错误")
-                logger.error(f"获取勋章奖励失败: {error_msg}")
-                return False, error_msg
-                
-            # 获取奖励信息
-            result = data.get("result", {})
-            if not result:
-                logger.error("获取勋章奖励失败: 返回数据格式错误")
-                return False, "返回数据格式错误"
-                
-            # 提取奖励金额和电力值
-            reward = result.get("rewardAmount", 0)
-            seed_bonus = result.get("seedBonus", "0")
-            
-            # 记录成功日志
-            success_msg = f"梅兰竹菊成套勋章奖励: {reward}, 总电力: {seed_bonus}"
-            logger.info(success_msg)
-            return True, success_msg
-            
-        except Exception as e:
-            logger.error(f"处理勋章奖励失败: {str(e)}")
-            return False, f"处理失败: {str(e)}"
 
     def get_username(self) -> Optional[str]:
         """
