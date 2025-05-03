@@ -145,29 +145,6 @@ class ISiteHandler(metaclass=ABCMeta):
                                           etree.HTML(response.text).xpath("//tr/td")]
         return self._send_get_request(self.url_shoutbox, rt_method=rt_method)
 
-    def claim_task(self, task_id: str, rt_method: callable) -> str:
-        """
-        申领任务
-        :param task_id: 任务ID
-        :param rt_method: 响应处理方法
-        :return: 处理后的响应结果
-        """
-        data = {
-            "action": "claimTask",
-            "params[exam_id]": task_id
-        }
-        return self._send_post_request(self.url_ajax, data=data, rt_method=rt_method)
-
-    def attendance(self, rt_method: callable = None):
-        """
-        每日签到
-        :param rt_method: 响应处理方法
-        :return: 处理后的响应结果
-        """
-        if rt_method is None:
-            rt_method = lambda response: "".join(etree.HTML(response.text).xpath("//td/table//tr/td/p//text()"))
-        return self._send_get_request(self.attendance_url, rt_method=rt_method)
-
     def get_message_list(self, rt_method: callable = None):
         """
         获取邮件列表
@@ -198,15 +175,6 @@ class ISiteHandler(metaclass=ABCMeta):
             "box": "1"
         }
         return self._send_post_request(self.messages_url, data=data, rt_method=rt_method)
-
-    def lottery(self, parameter: tuple = None, rt_method: callable = None):
-        """
-        抽奖
-        :param parameter: 抽奖参数
-        :param rt_method: 响应处理方法
-        :return: 处理后的响应结果
-        """
-        pass
 
     @abstractmethod
     def match(self) -> bool:
@@ -251,16 +219,3 @@ class ISiteHandler(metaclass=ABCMeta):
         except Exception as e:
             logger.error(f"获取站点 {site_name} 的用户信息失败: {str(e)}")
             return None
-            
-    def _clean_shoutbox_text(self, text: str) -> str:
-        """
-        清理喊话区文本
-        """
-        # 清理HTML及特殊字符
-        text = text.replace("\xa0", " ").strip()
-        
-        # 去除多余空格
-        while "  " in text:
-            text = text.replace("  ", " ")
-            
-        return text 
