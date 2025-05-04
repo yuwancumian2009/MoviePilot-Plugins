@@ -18,9 +18,9 @@ class ZmedalRwd(_PluginBase):
     # 插件描述
     plugin_desc = "领取勋章套装奖励。"
     # 插件图标
-    plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zmpt.png"
+    plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/ZmedalRwd.png"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.1"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -35,7 +35,12 @@ class ZmedalRwd(_PluginBase):
     # 私有属性
     _enabled: bool = False
     _onlyonce: bool = False
-    _notify: bool = False
+    _notify: bool = True
+
+    # 勋章系列开关
+    _anni_enabled: bool = False
+    _terms_enabled: bool = False
+    _plum_enabled: bool = False
 
     # 勋章套装奖励参数
     _cookie: Optional[str] = None
@@ -57,8 +62,11 @@ class ZmedalRwd(_PluginBase):
             self._cron_month = config.get("cron_month")
             self._cron_week = config.get("cron_week")
             self._cookie = config.get("cookie")
-            self._notify = config.get("notify", False)
+            self._notify = config.get("notify", True)
             self._onlyonce = config.get("onlyonce", False)
+            self._anni_enabled = config.get("anni_enabled", False)
+            self._terms_enabled = config.get("terms_enabled", False)
+            self._plum_enabled = config.get("plum_enabled", False)
 
         if self._onlyonce:
             try:
@@ -82,7 +90,10 @@ class ZmedalRwd(_PluginBase):
                     "cron_week": self._cron_week,
                     "enabled": self._enabled,
                     "cookie": self._cookie,
-                    "notify": self._notify
+                    "notify": self._notify,
+                    "anni_enabled": self._anni_enabled,
+                    "terms_enabled": self._terms_enabled,
+                    "plum_enabled": self._plum_enabled
                 })
 
                 # 启动任务
@@ -122,6 +133,14 @@ class ZmedalRwd(_PluginBase):
         # 根据类型执行对应的奖励领取
         for mtype in ["anni", "terms", "plum"]:
             if medal_type in ["all", mtype]:
+                # 检查对应的开关是否启用
+                if mtype == "anni" and not self._anni_enabled:
+                    continue
+                if mtype == "terms" and not self._terms_enabled:
+                    continue
+                if mtype == "plum" and not self._plum_enabled:
+                    continue
+                    
                 try:
                     response = requests.get(medal_urls[mtype], headers=self.headers)
                     response_data = response.json()
@@ -255,6 +274,8 @@ class ZmedalRwd(_PluginBase):
             if results:
                 report += "\n".join(results)
             
+            # 添加时间戳
+            report += f"\n⏱ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             return report
 
         except Exception as e:
@@ -305,6 +326,9 @@ class ZmedalRwd(_PluginBase):
         """
         拼装插件配置页面，需要返回两块数据：1、页面配置；2、数据结构
         """
+        # 动态判断MoviePilot版本，决定定时任务输入框组件类型
+        version = getattr(settings, "VERSION_FLAG", "v1")
+        cron_field_component = "VCronField" if version == "v2" else "VTextField"
         return [
             {
                 'component': 'VForm',
@@ -333,7 +357,7 @@ class ZmedalRwd(_PluginBase):
                                             {
                                                 'component': 'VIcon',
                                                 'props': {
-                                                    'color': 'primary',
+                                                    'style': 'color: #16b1ff',
                                                     'class': 'mr-3',
                                                     'size': 'default'
                                                 },
@@ -440,15 +464,15 @@ class ZmedalRwd(_PluginBase):
                                             {
                                                 'component': 'VIcon',
                                                 'props': {
-                                                    'color': 'primary',
+                                                    'style': 'color: #16b1ff',
                                                     'class': 'mr-3',
                                                     'size': 'default'
                                                 },
-                                                'text': 'mdi-clock'
+                                                'text': 'mdi-tools'
                                             },
                                             {
                                                 'component': 'span',
-                                                'text': '定时设置'
+                                                'text': '功能设置'
                                             }
                                         ]
                                     }
@@ -460,6 +484,65 @@ class ZmedalRwd(_PluginBase):
                                     'class': 'px-6 pb-6'
                                 },
                                 'content': [
+                                    {
+                                        'component': 'VRow',
+                                        'content': [
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'sm': 4
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSwitch',
+                                                        'props': {
+                                                            'model': 'anni_enabled',
+                                                            'label': '周年庆系列',
+                                                            'color': 'primary',
+                                                            'hide-details': True
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'sm': 4
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSwitch',
+                                                        'props': {
+                                                            'model': 'terms_enabled',
+                                                            'label': '二十四节气系列',
+                                                            'color': 'primary',
+                                                            'hide-details': True
+                                                        }
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                'component': 'VCol',
+                                                'props': {
+                                                    'cols': 12,
+                                                    'sm': 4
+                                                },
+                                                'content': [
+                                                    {
+                                                        'component': 'VSwitch',
+                                                        'props': {
+                                                            'model': 'plum_enabled',
+                                                            'label': '梅兰竹系列',
+                                                            'color': 'primary',
+                                                            'hide-details': True
+                                                        }
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    },
                                     {
                                         'component': 'VRow',
                                         'content': [
@@ -491,7 +574,7 @@ class ZmedalRwd(_PluginBase):
                                                 },
                                                 'content': [
                                                     {
-                                                        'component': 'VTextField',
+                                                        'component': cron_field_component,  # 动态切换
                                                         'props': {
                                                             'model': 'cron_month',
                                                             'label': '每月执行周期(cron)',
@@ -512,7 +595,7 @@ class ZmedalRwd(_PluginBase):
                                                 },
                                                 'content': [
                                                     {
-                                                        'component': 'VTextField',
+                                                        'component': cron_field_component,  # 动态切换
                                                         'props': {
                                                             'model': 'cron_week',
                                                             'label': '每周执行周期(cron)',
@@ -555,7 +638,7 @@ class ZmedalRwd(_PluginBase):
                                             {
                                                 'component': 'VIcon',
                                                 'props': {
-                                                    'color': 'primary',
+                                                    'style': 'color: #16b1ff',
                                                     'class': 'mr-3',
                                                     'size': 'default'
                                                 },
@@ -563,7 +646,7 @@ class ZmedalRwd(_PluginBase):
                                             },
                                             {
                                                 'component': 'span',
-                                                'text': '使用说明'
+                                                'text': '领取说明'
                                             }
                                         ]
                                     }
@@ -618,7 +701,7 @@ class ZmedalRwd(_PluginBase):
                                                     {
                                                         'component': 'div',
                                                         'class': 'text-subtitle-1 font-weight-bold mb-2',
-                                                        'text': '🌿 二十四节气系列领取规则：'
+                                                        'text': '🌿 二十四节气系列领取规则(站点暂未开放领取)：'
                                                     },
                                                     {
                                                         'component': 'div',
@@ -676,7 +759,10 @@ class ZmedalRwd(_PluginBase):
         ], {
             "enabled": False,
             "onlyonce": False,
-            "notify": False,
+            "notify": True,
+            "anni_enabled": False,
+            "terms_enabled": False,
+            "plum_enabled": False,
             "cookie": "",
             "cron_month": "0 0 1 * *",
             "cron_week": "0 0 * * 1",
