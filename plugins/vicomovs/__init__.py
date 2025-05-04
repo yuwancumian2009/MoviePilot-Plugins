@@ -51,7 +51,7 @@ class VicomoVS(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Vicomovs.png"
     # 插件版本
-    plugin_version = "1.2"
+    plugin_version = "1.2.1"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -69,10 +69,6 @@ class VicomoVS(_PluginBase):
     _notify: bool = False  # 是否开启通知
     _use_proxy: bool = True  # 是否使用代理，默认启用
     _retry_count: int = 2  # 失败重试次数
-    _daily_battle_count: int = 0  # 当天战斗次数计数器
-    _last_battle_date: str = ""  # 最后战斗日期
-
-    # 任务执行间隔
     _cron: Optional[str] = None
     _cookie: Optional[str] = None
     _history_count: Optional[int] = None
@@ -104,10 +100,6 @@ class VicomoVS(_PluginBase):
             self._use_proxy = config.get("use_proxy", True)
             self._retry_count = int(config.get("retry_count", 2))
             
-            # 初始化战斗次数
-            self._daily_battle_count = self.get_data('daily_battle_count') or 0
-            self._last_battle_date = self.get_data('last_battle_date') or ""
-
         if self._onlyonce:
             try:
                 self._scheduler = BackgroundScheduler(timezone=settings.TZ)
@@ -196,17 +188,8 @@ class VicomoVS(_PluginBase):
         执行对战任务
         """
         try:
-            # 获取当前日期
-            current_date = datetime.today().strftime('%Y-%m-%d')
-            
-            # 检查是否需要重置当天战斗次数
-            if self._last_battle_date != current_date:
-                self._daily_battle_count = 0
-                self._last_battle_date = current_date
-                self.save_data('daily_battle_count', self._daily_battle_count)
-                self.save_data('last_battle_date', self._last_battle_date)
-            
             # 获取角色和战斗次数信息
+            logger.info("开始获取角色和战斗次数信息...")
             char_info = self.get_character_info()
             
             # 检查是否有角色
@@ -233,6 +216,7 @@ class VicomoVS(_PluginBase):
                 return
                 
             # 检查剩余战斗次数
+            logger.info(f"检查剩余战斗次数: {char_info['battles_remaining']}")
             if char_info["battles_remaining"] == 0:
                 msg = "😴你今天已经战斗过了，请休息整备明天再战！"
                 logger.info(msg)
@@ -251,32 +235,30 @@ class VicomoVS(_PluginBase):
             # 开始执行对战
             logger.info("开始执行对战...")
             battle_results = []
-            for i in range(self._vs_boss_count):
-                # 更新当天战斗次数
-                self._daily_battle_count += 1
-                self.save_data('daily_battle_count', self._daily_battle_count)
-                
-                logger.info(f"执行第 {self._daily_battle_count} 次对战")
-                battle_result = None
-                for attempt in range(self._retry_count + 1):
-                    try:
-                        battle_result = self.vs_boss()
-                        if battle_result:
-                            break
-                        else:
-                            raise Exception("对战结果为空")
-                    except Exception as e:
-                        logger.error(f"第{self._daily_battle_count}次对战第{attempt+1}次尝试失败: {e}")
-                        if attempt < self._retry_count:
-                            time.sleep(2)  # 每次重试间隔2秒
-                        else:
-                            logger.error(f"第{self._daily_battle_count}次对战重试已达上限({self._retry_count})，放弃本次对战")
-                if battle_result:
-                    battle_results.append(battle_result)
-                    logger.info(f"第 {self._daily_battle_count} 次对战结果：{battle_result}")
-                if i < self._vs_boss_count - 1:  # 如果不是最后一次对战
-                    logger.info(f"等待 {self._vs_boss_interval} 秒后执行下一次对战")
-                    time.sleep(self._vs_boss_interval)
+            
+            # 根据剩余次数计算当前是第几场
+            current_battle = 3 - char_info["battles_remaining"] + 1
+            logger.info(f"当前是第 {current_battle} 场对战")
+            
+            # 执行对战
+            battle_result = None
+            for attempt in range(self._retry_count + 1):
+                try:
+                    battle_result = self.vs_boss()
+                    if battle_result:
+                        break
+                    else:
+                        raise Exception("对战结果为空")
+                except Exception as e:
+                    logger.error(f"第{current_battle}次对战第{attempt+1}次尝试失败: {e}")
+                    if attempt < self._retry_count:
+                        time.sleep(2)  # 每次重试间隔2秒
+                    else:
+                        logger.error(f"第{current_battle}次对战重试已达上限({self._retry_count})，放弃本次对战")
+            
+            if battle_result:
+                battle_results.append(battle_result)
+                logger.info(f"第 {current_battle} 次对战结果：{battle_result}")
 
             # 生成报告
             logger.info("开始生成报告...")
@@ -287,7 +269,7 @@ class VicomoVS(_PluginBase):
             sign_dict = {
                 "date": datetime.today().strftime('%Y-%m-%d %H:%M:%S'),
                 "battle_results": battle_results,
-                "battle_count": self._daily_battle_count - len(battle_results) + 1  # 记录本次战斗的起始次数
+                "battle_count": current_battle
             }
 
             # 读取历史记录
@@ -343,10 +325,13 @@ class VicomoVS(_PluginBase):
             
             report += f"━━━━━━━━━━━━━━\n"
             report += f"📊 详细战报：\n"
-            for i, result in enumerate(battle_results, self._daily_battle_count - len(battle_results) + 1):
+            for i, result in enumerate(battle_results, 1):
                 status, grass = self.parse_battle_result(result)
                 status_emoji = "🏆" if status == "胜利" else "💔" if status == "战败" else "🤝"
                 report += f"第 {i} 场：{status_emoji} {status} | 🌿 {grass}象草\n"
+            
+            # 添加时间戳
+            report += f"\n⏱ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             
             return report
         except Exception as e:
@@ -512,7 +497,7 @@ class VicomoVS(_PluginBase):
                                             {
                                                 'component': 'VIcon',
                                                 'props': {
-                                                    'color': 'primary',
+                                                    'style': 'color: #16b1ff;',
                                                     'class': 'mr-3',
                                                     'size': 'default'
                                                 },
@@ -637,7 +622,7 @@ class VicomoVS(_PluginBase):
                                             {
                                                 'component': 'VIcon',
                                                 'props': {
-                                                    'color': 'primary',
+                                                    'style': 'color: #16b1ff;',
                                                     'class': 'mr-3',
                                                     'size': 'default'
                                                 },
@@ -838,7 +823,7 @@ class VicomoVS(_PluginBase):
                                             {
                                                 'component': 'VIcon',
                                                 'props': {
-                                                    'color': 'primary',
+                                                    'style': 'color: #16b1ff;',
                                                     'class': 'mr-3',
                                                     'size': 'default'
                                                 },
@@ -997,13 +982,35 @@ class VicomoVS(_PluginBase):
                 }
             ]
 
-        # 按照签到时间倒序并限制显示条数
-        historys = sorted(historys, key=lambda x: x.get("date") or "", reverse=True)
-        if self._history_count:
-            historys = historys[:self._history_count]
+        # 展开所有历史批次的battle_results为明细列表，并按天编号场次
+        details = []
+        # 先按date升序排列（旧到新）
+        historys_sorted = sorted(historys, key=lambda x: x.get("date", ""))
+        # 按天统计场次编号
+        day_counters = {}
+        for history in historys_sorted:
+            date = history.get("date", "")
+            day = date[:10]
+            battle_results = history.get("battle_results", [])
+            for result in battle_results:
+                if day not in day_counters:
+                    day_counters[day] = 1
+                else:
+                    day_counters[day] += 1
+                details.append({
+                    "date": date,
+                    "battle_count": f"第{day_counters[day]}场",
+                    "result": result
+                })
+
+        # 渲染时按date倒序排列（新到旧）
+        details = sorted(details, key=lambda x: (x["date"]), reverse=True)
+
+        # 取前N条
+        max_count = self._history_count or 10
+        details = details[:max_count]
 
         return [
-            # 历史记录表格
             {
                 'component': 'VCard',
                 'props': {
@@ -1121,7 +1128,7 @@ class VicomoVS(_PluginBase):
                                                         },
                                                         'content': [
                                                             {'component': 'VIcon', 'props': {'style': 'color: #1976d2;', 'size': 'x-small', 'class': 'mr-1'}, 'text': 'mdi-clock-time-four-outline'},
-                                                            {'component': 'span', 'text': history.get("date", "")[:10]}
+                                                            {'component': 'span', 'text': detail["date"][:10]}
                                                         ]
                                                     },
                                                     {
@@ -1131,7 +1138,7 @@ class VicomoVS(_PluginBase):
                                                         },
                                                         'content': [
                                                             {'component': 'VIcon', 'props': {'style': 'color: #1976d2;', 'size': 'x-small', 'class': 'mr-1'}, 'text': 'mdi-sword-cross'},
-                                                            {'component': 'span', 'text': f"第{history.get('battle_count', 1) + idx}次"}
+                                                            {'component': 'span', 'text': detail["battle_count"]}
                                                         ]
                                                     },
                                                     {
@@ -1143,14 +1150,14 @@ class VicomoVS(_PluginBase):
                                                             {
                                                                 'component': 'VChip',
                                                                 'props': {
-                                                                    'color': 'success' if self.parse_battle_result(result)[0] == '胜利' else '#ffebee' if self.parse_battle_result(result)[0] == '战败' else 'info',
+                                                                    'color': 'success' if self.parse_battle_result(detail["result"])[0] == '胜利' else '#ffcdd2' if self.parse_battle_result(detail["result"])[0] == '战败' else 'info',
                                                                     'variant': 'elevated',
                                                                     'size': 'small',
                                                                     'class': 'mr-1',
                                                                 },
                                                                 'content': [
-                                                                    {'component': 'span', 'text': '🏆' if self.parse_battle_result(result)[0] == '胜利' else '💔' if self.parse_battle_result(result)[0] == '战败' else '🤝'},
-                                                                    {'component': 'span', 'text': self.parse_battle_result(result)[0]}
+                                                                    {'component': 'span', 'text': '🏆' if self.parse_battle_result(detail["result"])[0] == '胜利' else '💔' if self.parse_battle_result(detail["result"])[0] == '战败' else '🤝'},
+                                                                    {'component': 'span', 'text': self.parse_battle_result(detail["result"])[0]}
                                                                 ]
                                                             }
                                                         ]
@@ -1162,11 +1169,11 @@ class VicomoVS(_PluginBase):
                                                         },
                                                         'content': [
                                                             {'component': 'VIcon', 'props': {'color': 'success', 'size': 'x-small', 'class': 'mr-1'}, 'text': 'mdi-leaf'},
-                                                            {'component': 'span', 'text': self.parse_battle_result(result)[1]}
+                                                            {'component': 'span', 'text': self.parse_battle_result(detail["result"])[1]}
                                                         ]
                                                     }
                                                 ]
-                                            } for history in historys for idx, result in enumerate(history.get("battle_results", []))
+                                            } for detail in details
                                         ]
                                     }
                                 ]
@@ -1179,7 +1186,7 @@ class VicomoVS(_PluginBase):
                                 },
                                 'content': [
                                     {'component': 'VIcon', 'props': {'size': 'x-small', 'class': 'mr-1'}, 'text': 'mdi-format-list-bulleted'},
-                                    {'component': 'span', 'text': f'共显示 {sum(len(history.get("battle_results", [])) for history in historys)} 条记录'}
+                                    {'component': 'span', 'text': f'共显示 {len(details)} 条记录'}
                                 ]
                             }
                         ]
