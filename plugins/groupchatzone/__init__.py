@@ -32,7 +32,7 @@ class GroupChatZone(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Octopus.png"
     # 插件版本
-    plugin_version = "2.1.0"
+    plugin_version = "2.1.1"
     # 插件作者
     plugin_author = "KoWming,madrays"
     # 作者主页
@@ -310,18 +310,30 @@ class GroupChatZone(_PluginBase):
                 seconds = 0
                 logger.info("未找到上次邮件时间,使用默认时间间隔: 1小时")
             
-            # 添加定时任务
-            services.append({
-                "id": "GroupChatZoneZm",
-                "name": "群聊区 - 织梦定时任务",
-                "trigger": "interval", 
-                "func": self.send_zm_site_messages,
-                "kwargs": {
-                    "hours": hours,
-                    "minutes": minutes,
-                    "seconds": seconds
-                }
-            })
+            # 检查是否有织梦站点被选中
+            has_zm_site = False
+            for site_id in self._chat_sites:
+                site = self.siteoper.get(site_id)
+                if site and "织梦" in site.name:
+                    has_zm_site = True
+                    break
+            
+            # 只有在有织梦站点被选中时才添加定时任务
+            if has_zm_site:
+                # 添加定时任务
+                services.append({
+                    "id": "GroupChatZoneZm",
+                    "name": "群聊区 - 织梦定时任务",
+                    "trigger": "interval", 
+                    "func": self.send_zm_site_messages,
+                    "kwargs": {
+                        "hours": hours,
+                        "minutes": minutes,
+                        "seconds": seconds
+                    }
+                })
+            else:
+                logger.info("没有选中织梦站点，不添加织梦定时任务")
 
         if services:
             return services
@@ -843,14 +855,26 @@ class GroupChatZone(_PluginBase):
         try:
             self._running = True
             
+            # 检查是否有织梦站点被选中
+            has_zm_site = False
+            for site_id in self._chat_sites:
+                site = self.siteoper.get(site_id)
+                if site and "织梦" in site.name:
+                    has_zm_site = True
+                    break
+            
+            if not has_zm_site:
+                logger.info("没有选中织梦站点，不执行织梦站点任务")
+                return
+            
             # 获取所有站点
             all_sites = [site for site in self.sites.get_indexers() if not site.get("public")] + self.__custom_sites()
             
             # 过滤出织梦站点
-            zm_sites = [site for site in all_sites if "织梦" in site.get("name", "").lower()]
+            zm_sites = [site for site in all_sites if "织梦" in site.get("name", "").lower() and site.get("id") in self._chat_sites]
             
             if not zm_sites:
-                logger.info("没有找到织梦站点")
+                logger.info("没有找到选中的织梦站点")
                 return
                 
             # 解析站点消息
