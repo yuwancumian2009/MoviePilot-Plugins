@@ -51,7 +51,7 @@ class VicomoVS(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Vicomovs.png"
     # 插件版本
-    plugin_version = "1.2.1"
+    plugin_version = "1.2.2"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -236,29 +236,38 @@ class VicomoVS(_PluginBase):
             logger.info("开始执行对战...")
             battle_results = []
             
-            # 根据剩余次数计算当前是第几场
-            current_battle = 3 - char_info["battles_remaining"] + 1
-            logger.info(f"当前是第 {current_battle} 场对战")
+            # 获取可执行的对战次数（不超过剩余次数）
+            battles_to_execute = min(char_info["battles_remaining"], self._vs_boss_count)
             
-            # 执行对战
-            battle_result = None
-            for attempt in range(self._retry_count + 1):
-                try:
-                    battle_result = self.vs_boss()
-                    if battle_result:
-                        break
-                    else:
-                        raise Exception("对战结果为空")
-                except Exception as e:
-                    logger.error(f"第{current_battle}次对战第{attempt+1}次尝试失败: {e}")
-                    if attempt < self._retry_count:
-                        time.sleep(2)  # 每次重试间隔2秒
-                    else:
-                        logger.error(f"第{current_battle}次对战重试已达上限({self._retry_count})，放弃本次对战")
-            
-            if battle_result:
-                battle_results.append(battle_result)
-                logger.info(f"第 {current_battle} 次对战结果：{battle_result}")
+            # 循环执行多次对战
+            for i in range(battles_to_execute):
+                # 计算当前场次（3 - 剩余次数 + 1 + i）
+                current_battle = 3 - char_info["battles_remaining"] + 1 + i
+                logger.info(f"开始第 {current_battle} 场对战")
+                
+                # 执行对战
+                battle_result = None
+                for attempt in range(self._retry_count + 1):
+                    try:
+                        battle_result = self.vs_boss()
+                        if battle_result:
+                            break
+                        else:
+                            raise Exception("对战结果为空")
+                    except Exception as e:
+                        logger.error(f"第{current_battle}次对战第{attempt+1}次尝试失败: {e}")
+                        if attempt < self._retry_count:
+                            time.sleep(2)  # 每次重试间隔2秒
+                        else:
+                            logger.error(f"第{current_battle}次对战重试已达上限({self._retry_count})，放弃本次对战")
+                
+                if battle_result:
+                    battle_results.append(battle_result)
+                    logger.info(f"第 {current_battle} 次对战结果：{battle_result}")
+                    
+                    # 如果还有下一场对战，等待指定间隔时间
+                    if i < battles_to_execute - 1:
+                        time.sleep(self._vs_boss_interval)
 
             # 生成报告
             logger.info("开始生成报告...")
