@@ -141,6 +141,7 @@ class ZhuqueHelper(_PluginBase):
             current_time = time.time()
             # 获取最小next_time
             min_next_time = min((t for t in next_times if t > current_time), default=None)
+            min_next_time = min((t for t in next_times if t > current_time), default=current_time)
 
             return bonus, min_level, min_next_time
 
