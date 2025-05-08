@@ -138,5 +138,19 @@
         "v1.1": "新增勋章系列开关，新增定时框根据版本动态切换(V2版本使用VCronField组件,V1版本使用VTextField组件)。",
         "v1.0": "初始版本。"
     }
+  },
+  "MedalWall": {
+    "name": "勋章墙",
+    "description": "站点勋章购买提醒、统计、展示。",
+    "labels": "站点",
+    "version": "1.1",
+    "icon": "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/Medal.png",
+    "author": "KoWming",
+    "level": 2,
+    "v2": true,
+    "history": {
+        "v1.1": "新增适配多个站点，优化消息推送结构。",
+        "v1.0": "初始版本。"
+    }
   }
 }
