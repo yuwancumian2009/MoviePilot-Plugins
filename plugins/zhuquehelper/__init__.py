@@ -22,7 +22,7 @@ class ZhuqueHelper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/KoWming/MoviePilot-Plugins/main/icons/zhuquehelper.png"
     # 插件版本
-    plugin_version = "1.3.0"
+    plugin_version = "1.3.1"
     # 插件作者
     plugin_author = "KoWming"
     # 作者主页
@@ -140,7 +140,7 @@ class ZhuqueHelper(_PluginBase):
             # 获取当前时间戳
             current_time = time.time()
             # 获取最小next_time
-            min_next_time = min((t for t in next_times if t > current_time), default=None)
+            min_next_time = min((t for t in next_times if t > current_time), default=current_time)
 
             return bonus, min_level, min_next_time
 
