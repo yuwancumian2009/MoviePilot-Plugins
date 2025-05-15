@@ -452,11 +452,13 @@ class DirectoryRegexRenamer(_PluginBase):
                                 'props': {
                                     'model': 'rename_rules_str',
                                     'label': '重命名规则 (正则表达式, 每行一条: 查找模式|替换字符串)',
-                                    'placeholder': '^\[.*?\] (.*) - (S[0-9]{2}E[0-9]{2}).*(\\..*)$|$1 - $2$3\n(.*)\\.sample(\\..*)$|$1$2',
+                                    # MODIFIED PLACEHOLDER
+                                    'placeholder': '^\[.*?\] (.*) - (S[0-9]{2}E[0-9]{2}).*(\\..*)$|\\1 - \\2\\3\n(.*)\\.sample(\\..*)$|\\1\\2',
                                     'rows': 5,
                                     'auto-grow': True,
                                     'clearable': True,
-                                    'hint': '示例: (.*)_old(\\..*)|$1_new$2 (将文件名中的_old替换为_new)',
+                                    # MODIFIED HINT
+                                    'hint': '示例: (.*)_old(\\..*)|\\1_new\\2 (将文件名中的_old替换为_new). 使用 \\1, \\2 等反向引用。',
                                     'persistent-hint': True
                                 }
                             }]
