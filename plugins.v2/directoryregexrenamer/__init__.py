@@ -57,13 +57,13 @@ class RenameFileMonitorHandler(FileSystemEventHandler):
 
 class DirectoryRegexRenamer(_PluginBase):
     # 插件名称
-    plugin_name = "目录文件正则重命名"
+    plugin_name = "监控新增文件重命名"
     # 插件描述
     plugin_desc = "监控指定目录中的新增文件，并根据自定义正则表达式规则进行重命名。"
     # 插件图标 (using a generic gear icon for now)
     plugin_icon = "https://github.com/yuwancumian2009/MoviePilot-Plugins/blob/main/icons/Filebrowser_A.png"
     # 插件版本
-    plugin_version = "0.1.0"
+    plugin_version = "1.0.0"
     # 插件作者
     plugin_author = "yuwan" # Or your name
     # 作者主页
