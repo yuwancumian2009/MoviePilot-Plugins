@@ -61,13 +61,13 @@ class DirectoryRegexRenamer(_PluginBase):
     # 插件描述
     plugin_desc = "监控指定目录中的新增文件，并根据自定义正则表达式规则进行重命名。"
     # 插件图标 (using a generic gear icon for now)
-    plugin_icon = "https://raw.githubusercontent.com/linuxserver/docker-templates/master/linuxserver.io/img/cog-256.png"
+    plugin_icon = "https://github.com/yuwancumian2009/MoviePilot-Plugins/blob/main/icons/Filebrowser_A.png"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "0.1.0"
     # 插件作者
-    plugin_author = "Gemini AI" # Or your name
+    plugin_author = "yuwan" # Or your name
     # 作者主页
-    author_url = "https://github.com/google-gemini" # Or your repo
+    author_url = "https://github.com/yuwancumian2009" # Or your repo
     # 插件配置项ID前缀
     plugin_config_prefix = "dirregexrenamer_"
     # 加载顺序
