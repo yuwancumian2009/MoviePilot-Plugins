@@ -1,5 +1,5 @@
 {
-  "BatchFileRename": {
+  "DirectoryRegexRenamer": {
     "name": "目录文件正则重命名",
     "description": "监控文件目录，自定义重命名规则",
     "labels": "文件管理",
