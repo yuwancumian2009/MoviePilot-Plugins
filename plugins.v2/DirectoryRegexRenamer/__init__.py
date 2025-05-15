@@ -69,7 +69,7 @@ class DirectoryRegexRenamer(_PluginBase):
     # 作者主页
     author_url = "https://github.com/yuwancumian2009" # Or your repo
     # 插件配置项ID前缀
-    plugin_config_prefix = "dirregexrenamer_"
+    plugin_config_prefix = "directoryregexrenamer_"
     # 加载顺序
     plugin_order = 40 # Arbitrary, adjust as needed
     # 可使用的用户级别
