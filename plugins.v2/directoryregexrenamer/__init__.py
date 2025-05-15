@@ -61,7 +61,7 @@ class DirectoryRegexRenamer(_PluginBase):
     # 插件描述
     plugin_desc = "监控指定目录中的新增文件，并根据自定义正则表达式规则进行重命名。"
     # 插件图标 (using a generic gear icon for now)
-    plugin_icon = "https://github.com/yuwancumian2009/MoviePilot-Plugins/blob/main/icons/Filebrowser_A.png"
+    plugin_icon = "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/filerename_A.png"
     # 插件版本
     plugin_version = "1.0.0"
     # 插件作者
