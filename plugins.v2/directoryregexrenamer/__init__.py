@@ -517,16 +517,16 @@ class DirectoryRegexRenamer(_PluginBase):
 
     def get_api(self) -> List[Dict[str, Any]]:
         # No specific APIs exposed by this plugin for now
-        return []
+        pass
 
     def get_command(self) -> List[Dict[str, Any]]:
         # No specific commands exposed by this plugin for now
-        return []
+        pass
 
     def get_service(self) -> List[Dict[str, Any]]:
         # No background services (like CRON jobs) beyond the watchdog monitor itself
-        return []
+        pass
 
     def get_page(self) -> List[dict]:
         # No custom page for this plugin
-        return []
+        pass
