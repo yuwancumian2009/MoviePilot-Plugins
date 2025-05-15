@@ -7,7 +7,6 @@
     "icon": "https://github.com/yuwancumian2009/MoviePilot-Plugins/blob/main/icons/Filebrowser_A.png",
     "author": "yuwan",
     "level": 1,
-    "v2": true,
     "history": {
       "v0.1": "监控文件目录，自定义重命名规则。"
     }
