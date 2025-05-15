@@ -1,14 +1,14 @@
 {
   "DirectoryRegexRenamer": {
-    "name": "目录文件正则重命名",
+    "name": "监控新增文件重命名",
     "description": "监控文件目录，自定义重命名规则",
     "labels": "文件管理",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "icon": "https://github.com/yuwancumian2009/MoviePilot-Plugins/main/icons/Filebrowser_A.png",
     "author": "yuwan",
     "level": 1,
     "history": {
-      "v0.1": "监控文件目录，自定义重命名规则。"
+      "v1.0.0": "监控文件目录，自定义重命名规则。"
     }
   }
 }
