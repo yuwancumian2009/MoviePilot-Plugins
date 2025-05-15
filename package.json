@@ -1,6 +1,6 @@
 {
   "BatchFileRename": {
-    "name": "文件批量重命名监控",
+    "name": "目录文件正则重命名",
     "description": "监控文件目录，自定义重命名规则",
     "labels": "文件管理",
     "version": "0.1.0",
