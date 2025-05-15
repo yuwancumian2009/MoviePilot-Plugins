@@ -49,13 +49,13 @@ class BatchFileRename(_PluginBase):
     # 插件描述
     plugin_desc = "监控指定目录的新增文件，并根据自定义正则表达式进行重命名。也支持对目录内现有文件执行一次重命名操作。"
     # 插件图标 (using one from the example's source for consistency)
-    plugin_icon = "https://raw.githubusercontent.com/wikrin/MoviePilot-Plugins/main/icons/alter_1.png"
+    plugin_icon = "https://github.com/yuwancumian2009/MoviePilot-Plugins/blob/main/icons/Filebrowser_A.png"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "0.1.0"
     # 插件作者
-    plugin_author = "Gemini AI" # Or your name
+    plugin_author = "yuwan" # Or your name
     # 作者主页
-    author_url = "https://github.com/GoogleCloudPlatform/vertex-ai-samples" # Or your github
+    author_url = "https://github.com/yuwancumian2009" # Or your github
     # 插件配置项ID前缀
     plugin_config_prefix = "batchfilerename_" # Ensure this is unique
     # 加载顺序
