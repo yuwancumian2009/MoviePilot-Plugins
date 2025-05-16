@@ -10,17 +10,5 @@
     "history": {
       "v1.0.0": "监控文件目录，自定义重命名规则。"
     }
-  },
-  "AdvancedNotificationManager": {
-    "name": "自定义通知",
-    "description": "允许自定义通知渠道，并为每个插件指定特定的通知发送渠道。",
-    "labels": "通知管理",
-    "version": "1.0.0",
-    "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/filerename.png",
-    "author": "yuwan",
-    "level": 1,
-    "history": {
-      "v1.0.0": "允许自定义通知渠道，并为每个插件指定特定的通知发送渠道。"
-    }
   }
 }
