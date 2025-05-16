@@ -12,12 +12,12 @@ from app.log import logger  # 用于日志记录
 import json  # 用于处理复杂的配置数据，例如列表/字典
 
 class AdvancedNotificationManager(_PluginBase):
-    plugin_name = "高级通知管理器"
+    plugin_name = "自定义通知"
     plugin_desc = "允许自定义通知渠道，并为每个插件指定其通知的发送方式。"
-    plugin_icon = "your_icon.png"  # 替换为您的插件图标URL
+    plugin_icon = "https://github.com/yuwancumian2009/MoviePilot-Plugins/blob/main/icons/Filebrowser.png"  # 替换为您的插件图标URL
     plugin_version = "1.0.0"
-    plugin_author = "您的名字"  # 替换为您的名字
-    author_url = "您的Github或主页URL"  # 替换
+    plugin_author = "yuwan"  # 替换为您的名字
+    author_url = "https://github.com/yuwancumian2009"  # 替换
     plugin_config_prefix = "advancednotificationmanager_"  # 插件配置项ID前缀
     plugin_order = 99  # 插件加载顺序，建议较后加载，以便能拦截其他插件的通知
     auth_level = 1  # 可使用的用户级别
