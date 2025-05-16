@@ -11,8 +11,8 @@
       "v1.0.0": "监控文件目录，自定义重命名规则。"
     }
   },
-  "AdvancedNotificationRouter": {
-    "name": "自定义通知渠道",
+  "AdvancedNotificationRouterCn": {
+    "name": "自定义通知",
     "description": "允许自定义通知渠道，并为每个插件指定特定的通知发送渠道。",
     "labels": "通知管理",
     "version": "1.0.0",
