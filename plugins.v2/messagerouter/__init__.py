@@ -18,7 +18,7 @@ except ImportError:
 class MessageRouter(_PluginBase):
     plugin_name = "插件消息重定向"
     plugin_desc = "接管并重定向其他插件的消息发送类型，自带实时拦截日志。"
-    plugin_icon = "https://github.com/yuwancumian2009/MoviePilot-Plugins/blob/c3cbe4b49351e987ddd24b3544d355519e41efc6/icons/messagerouter.png"
+    plugin_icon = "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png"
     plugin_version = "1.0.0"
     plugin_author = "yuwancumian"
     author_url = "https://github.com/yuwancumian2009/MoviePilot-Plugins"
