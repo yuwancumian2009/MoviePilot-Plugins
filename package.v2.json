@@ -1,14 +1,14 @@
 {
-  "DirectoryRegexRenamer": {
-    "name": "监控新增文件重命名",
-    "description": "监控文件目录，自定义重命名规则",
-    "labels": "文件管理",
+  "MessageRouter": {
+    "name": "插件消息重定向",
+    "description": "接管并重定向其他插件的消息发送类型，自带实时拦截日志。",
+    "labels": "系统",
     "version": "1.0.0",
-    "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/filerename_A.png",
+    "icon": "setting.png", 
     "author": "yuwan",
     "level": 1,
     "history": {
-      "v1.0.0": "监控文件目录，自定义重命名规则。"
+      "v1.0.0": "首次发布：支持精准拦截并重定向其他插件的消息发送类型。"
     }
   }
 }
