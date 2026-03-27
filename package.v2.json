@@ -4,7 +4,7 @@
     "description": "接管并重定向其他插件的消息发送类型，自带实时拦截日志。",
     "labels": "系统",
     "version": "1.0.0",
-    "icon": "https://github.com/yuwancumian2009/MoviePilot-Plugins/blob/c3cbe4b49351e987ddd24b3544d355519e41efc6/icons/messagerouter.png", 
+    "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png", 
     "author": "yuwancumian",
     "level": 1,
     "history": {
