@@ -24,9 +24,9 @@ except ImportError:
 
 class MessageRouter(_PluginBase):
     plugin_name = "插件消息重定向"
-    plugin_desc = "全面接管并重定向系统消息与插件通知。支持自定义消息类型修改、独立推送到企业微信。全兼容同步与异步(Async)发信架构，杜绝一切漏网之鱼。"
+    plugin_desc = "接管系统和插件通知，按插件名或关键字，重定向通知到指定类型或指定微信通知渠道"
     plugin_icon = "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png"
-    plugin_version = "2.2.0" # 引入 Asyncio 异步函数自适应兼容，解除总线频道限制，彻底接管系统官方通知
+    plugin_version = "2.1.0" # 引入 Asyncio 异步函数自适应兼容，解除总线频道限制，彻底接管系统官方通知
     plugin_author = "yuwancumian"
     author_url = "https://github.com/yuwancumian2009/MoviePilot-Plugins"
     plugin_config_prefix = "messagerouter_"
