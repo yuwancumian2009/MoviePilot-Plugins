@@ -1,15 +1,16 @@
 {
   "MessageRouter": {
     "name": "插件消息重定向",
-    "description": "按插件名或关键字，重定向通知到指定类型或指定微信通知渠道",
+    "description": "接管系统和插件通知，按插件名或关键字，重定向通知到指定类型或指定微信通知渠道",
     "labels": "系统",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png", 
     "author": "yuwancumian",
     "level": 1,
     "history": {
       "v1.0.0": "首次发布：支持精准拦截并重定向其他插件的消息发送类型。",
-      "v2.0.0": "全新重构升级：支持全链路深度拦截、独立企微多应用直推、源头阻断防重复机制，并新增标题关键字匹配功能（完美支持115网盘等特殊插件）。"
+      "v2.0.0": "全新重构升级：支持全链路深度拦截、独立企微多应用直推、源头阻断防重复机制，并新增标题关键字匹配功能（完美支持115网盘等特殊插件）。",
+      "v2.1.0": "增加对系统通知的支持"
     }
   }
 }
