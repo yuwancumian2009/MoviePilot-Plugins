@@ -3,25 +3,13 @@
     "name": "插件消息重定向",
     "description": "接管并重定向其他插件的消息发送类型，自带实时拦截日志。",
     "labels": "系统",
-    "version": "1.0.0",
+    "version": "2.0.0",
     "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png", 
     "author": "yuwancumian",
     "level": 1,
     "history": {
       "v1.0.0": "首次发布：支持精准拦截并重定向其他插件的消息发送类型。"
-    }
-  }
-},{
-  "MessageRouterVue": {
-    "name": "插件消息重定向 (Vue版)",
-    "description": "基于 Vue 联邦的全新版本，接管并重定向其他插件的消息发送类型，支持可视化动态无限规则配置。",
-    "labels": "系统",
-    "version": "1.0.0",
-    "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png",
-    "author": "yuwancumian",
-    "level": 1,
-    "history": {
-      "v1.0.0": "Vue联邦模式首发：支持动态无限添加路由规则，可视化下拉框选择。"
+      "v2.0.0": "全新重构升级：支持全链路深度拦截、独立企微多应用直推、源头阻断防重复机制，并新增标题关键字匹配功能（完美支持115网盘等特殊插件）。"
     }
   }
 }
