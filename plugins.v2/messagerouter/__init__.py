@@ -5,6 +5,7 @@ import time
 import traceback
 import requests
 import importlib
+import asyncio
 from datetime import datetime
 from typing import Any, List, Dict, Tuple, Optional
 
@@ -23,9 +24,9 @@ except ImportError:
 
 class MessageRouter(_PluginBase):
     plugin_name = "插件消息重定向"
-    plugin_desc = "全面接管并重定向插件通知。按插件名或关键字，重定向通知到指定类型或指定微信通知渠道"
+    plugin_desc = "全面接管并重定向系统消息与插件通知。支持自定义消息类型修改、独立推送到企业微信。全兼容同步与异步(Async)发信架构，杜绝一切漏网之鱼。"
     plugin_icon = "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png"
-    plugin_version = "2.0.0" 
+    plugin_version = "2.2.0" # 引入 Asyncio 异步函数自适应兼容，解除总线频道限制，彻底接管系统官方通知
     plugin_author = "yuwancumian"
     author_url = "https://github.com/yuwancumian2009/MoviePilot-Plugins"
     plugin_config_prefix = "messagerouter_"
@@ -91,7 +92,7 @@ class MessageRouter(_PluginBase):
             }
 
         if self._enabled:
-            self._add_log(f"🚀 插件启动，正在初始化消息拦截路由系统...")
+            self._add_log(f"🚀 插件启动，正在初始化异步全兼容消息路由系统...")
             self._patch_plugin_base()    
             self._patch_event_bus()      
             self._patch_message_utils()  
@@ -156,7 +157,7 @@ class MessageRouter(_PluginBase):
                 },
                 {
                     "component": "VRow",
-                    "content": [{"component": "VCol", "props": {"cols": 12}, "content": [{"component": "VTextarea", "props": {"model": "plugin_mapping", "label": "高级消息路由映射规则", "rows": 10, "placeholder": "语法：[插件名称/关键字] : [目标消息类型] : [系统微信通知名称]\n\n【配置说明】：\n1. 匹配优先级：插件名匹配优先于标题/正文关键字匹配。\n2. 特殊插件配置：对于部分未携带自身名称的插件（如 115网盘STRM助手），请使用其通知标题包含的关键字（如“115网盘”）。其它常规插件请直接使用插件名。\n3. 执行优先级：若同时配置了通知类型修改和企微通知渠道，系统将优先执行拦截与企微直推。\n\n【配置示例】 (中间不改类型请留空)：\n115网盘::通知1\nSTRM::通知2\n豆瓣同步:整理入库:"}}]}]
+                    "content": [{"component": "VCol", "props": {"cols": 12}, "content": [{"component": "VTextarea", "props": {"model": "plugin_mapping", "label": "高级消息路由映射规则", "rows": 10, "placeholder": "语法：[插件名称/关键字] : [目标消息类型] : [系统微信通知名称]\n\n【配置说明】：\n1. 匹配优先级：精确匹配优先于标题/正文关键字模糊匹配。\n2. 系统通知与特殊插件配置：接管系统官方消息（如添加订阅）或特殊插件时，请直接使用其通知标题中包含的关键字（如“添加订阅”、“115网盘”）。\n3. 执行优先级：若同时配置了通知类型修改和企微通知渠道，系统将优先执行拦截与企微直推。\n\n【配置示例】 (中间不改类型请留空)：\n115网盘::通知1\n添加订阅:其他:通知2\n豆瓣同步:整理入库:"}}]}]
                 }
             ]
         }], {
@@ -378,7 +379,7 @@ class MessageRouter(_PluginBase):
                 for a in args: _destroy(a)
                 for v in kwargs.values(): _destroy(v)
 
-                return True # 返回 True 彻底阻断底层的后续广播
+                return True # 返回 True 阻断底层的后续动作
 
         return False # 不阻断，带着修改后的类型放行给系统
 
@@ -399,18 +400,64 @@ class MessageRouter(_PluginBase):
             from app.core.event import eventmanager
             publish_method_name = next((m for m in ['send_event', 'publish_event', 'publish'] if hasattr(eventmanager, m)), None)
             if not publish_method_name or hasattr(eventmanager, 'original_publish_event_router'): return
-            setattr(eventmanager, 'original_publish_event_router', getattr(eventmanager, publish_method_name))
-            def hooked_publish_event(*args, **kwargs):
-                event_type = args[0] if len(args) > 0 else kwargs.get('event_type')
-                if event_type and "NoticeMessage" in str(event_type):
-                    if self._process_intercept(self._extract_msg_args(*args, **kwargs), args, kwargs, "事件总线"): return True
-                return getattr(eventmanager, 'original_publish_event_router')(*args, **kwargs)
-            setattr(eventmanager, publish_method_name, hooked_publish_event)
+            
+            original_publish = getattr(eventmanager, publish_method_name)
+            setattr(eventmanager, 'original_publish_event_router', original_publish)
+            
+            # 兼容异步事件总线 (如果存在的话)
+            if asyncio.iscoroutinefunction(original_publish):
+                async def hooked_publish_event(*args, **kwargs):
+                    try:
+                        msg_data = self._extract_msg_args(*args, **kwargs)
+                        if msg_data['title'] or msg_data['text']:
+                            if self._process_intercept(msg_data, args, kwargs, "异步事件总线"): return True
+                    except: pass
+                    return await getattr(eventmanager, 'original_publish_event_router')(*args, **kwargs)
+                setattr(eventmanager, publish_method_name, hooked_publish_event)
+            else:
+                def hooked_publish_event(*args, **kwargs):
+                    try:
+                        # 全盘扫描，不再局限于特定 event_type
+                        msg_data = self._extract_msg_args(*args, **kwargs)
+                        if msg_data['title'] or msg_data['text']:
+                            if self._process_intercept(msg_data, args, kwargs, "事件总线"): return True
+                    except: pass
+                    return getattr(eventmanager, 'original_publish_event_router')(*args, **kwargs)
+                setattr(eventmanager, publish_method_name, hooked_publish_event)
         except: pass
 
     def _patch_message_utils(self):
         import sys
         hook_count = 0
+        
+        # 1. 挂载 MoviePilot 官方系统的核心类方法链路 (针对 添加订阅、整理入库 等官方通知)
+        class_candidates = [
+            ("app.chain.message", ["MessageChain"]),
+            ("app.modules.message", ["MessageModule", "Message"]), 
+            ("app.utils.message", ["Message", "MessageUtils"]),
+            ("app.helper.message", ["MessageHelper", "Message"]), 
+            ("app.core.message", ["Message", "MessageManager"]),
+            ("app.core.notification", ["Notification"]),
+            ("app.helper.notification", ["NotificationHelper"]),
+            ("app.modules.telegram", ["TelegramModule", "Telegram"]),
+            ("app.modules.wechat", ["WechatModule", "Wechat"]),
+            ("app.modules.bark", ["BarkModule", "Bark"])
+        ]
+        methods_to_find = ['process', 'add_message', 'send_message', 'send_msg', 'send', 'post_message', 'notify', 'put']
+        
+        for mod_name, class_names in class_candidates:
+            try:
+                mod = importlib.import_module(mod_name)
+                for cls_name in class_names:
+                    if hasattr(mod, cls_name):
+                        target_class = getattr(mod, cls_name)
+                        for method_name in methods_to_find:
+                            if hasattr(target_class, method_name) and callable(getattr(target_class, method_name)):
+                                self._apply_deep_hook(target_class, method_name, mod_name, is_module=False)
+                                hook_count += 1
+            except Exception: pass
+
+        # 2. 挂载全局裸函数模块 (针对野生插件)
         for mod_name, mod in list(sys.modules.items()):
             if not (mod_name.startswith('app.') or mod_name.startswith('plugins.')): continue
             if 'messagerouter' in mod_name.lower(): continue
@@ -420,7 +467,7 @@ class MessageRouter(_PluginBase):
                     self._apply_deep_hook(mod, func_name, mod_name, is_module=True)
                     hook_count += 1
                     
-        self._add_log(f"✅ 底层路由开启：已成功挂载 {hook_count} 个系统发信模块")
+        self._add_log(f"✅ 底层路由开启：已成功挂载 {hook_count} 个系统与插件发信枢纽")
 
     def _apply_deep_hook(self, target_obj, method_name, mod_name, is_module=False):
         hook_attr_name = f"_original_{method_name}_router"
@@ -432,17 +479,29 @@ class MessageRouter(_PluginBase):
         if not hasattr(self, '_active_hooks'): self._active_hooks = []
         self._active_hooks.append((target_obj, method_name, hook_attr_name))
         
-        def hooked_send_msg(*args, **kwargs):
-            try:
-                msg_data = self._extract_msg_args(*args, **kwargs)
-                if msg_data['title'] or msg_data['text']:
-                    display_name = f"{mod_name}.{method_name}" if is_module else f"{target_obj.__name__}.{method_name}"
-                    if self._process_intercept(msg_data, args, kwargs, f"底层模块: {display_name}"):
-                        return True
-            except: pass
-            return getattr(target_obj, hook_attr_name)(*args, **kwargs)
-
-        setattr(target_obj, method_name, hooked_send_msg)
+        # 智能探测并兼容异步方法 (asyncio)
+        if asyncio.iscoroutinefunction(original_method):
+            async def hooked_send_msg_async(*args, **kwargs):
+                try:
+                    msg_data = self._extract_msg_args(*args, **kwargs)
+                    if msg_data['title'] or msg_data['text']:
+                        display_name = f"{mod_name}.{method_name}" if is_module else f"{target_obj.__name__}.{method_name}"
+                        if self._process_intercept(msg_data, args, kwargs, f"底层异步模块: {display_name}"):
+                            return True
+                except: pass
+                return await getattr(target_obj, hook_attr_name)(*args, **kwargs)
+            setattr(target_obj, method_name, hooked_send_msg_async)
+        else:
+            def hooked_send_msg_sync(*args, **kwargs):
+                try:
+                    msg_data = self._extract_msg_args(*args, **kwargs)
+                    if msg_data['title'] or msg_data['text']:
+                        display_name = f"{mod_name}.{method_name}" if is_module else f"{target_obj.__name__}.{method_name}"
+                        if self._process_intercept(msg_data, args, kwargs, f"底层模块: {display_name}"):
+                            return True
+                except: pass
+                return getattr(target_obj, hook_attr_name)(*args, **kwargs)
+            setattr(target_obj, method_name, hooked_send_msg_sync)
 
     def stop_service(self):
         try:
