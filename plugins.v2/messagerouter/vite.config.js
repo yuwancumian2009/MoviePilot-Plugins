@@ -6,48 +6,70 @@ export default defineConfig({
   plugins: [
     vue(),
     federation({
-      name: 'MessageRouterVue',
+      name: 'MessageRouter',
       filename: 'remoteEntry.js',
       exposes: {
         './Page': './src/components/Page.vue',
         './Config': './src/components/Config.vue',
       },
       shared: {
-        vue: { requiredVersion: false, generate: false },
-        vuetify: { requiredVersion: false, generate: false, singleton: true },
-        'vuetify/styles': { requiredVersion: false, generate: false, singleton: true },
+        vue: {
+          requiredVersion: false,
+          generate: false,
+        },
+        vuetify: {
+          requiredVersion: false,
+          generate: false,
+          singleton: true,
+        },
+        'vuetify/styles': {
+          requiredVersion: false,
+          generate: false,
+          singleton: true,
+        },
       },
-      format: 'esm'
-    })
+      format: 'esm',
+    }),
   ],
   build: {
     target: 'esnext',
     minify: false,
     cssCodeSplit: false,
-    outDir: 'plugins.v2/messageroutervue/dist' 
   },
   css: {
+    preprocessorOptions: {
+      scss: {
+        additionalData: '/* messagerouter styles */',
+      },
+    },
     postcss: {
       plugins: [
         {
           postcssPlugin: 'internal:charset-removal',
           AtRule: {
             charset: (atRule) => {
-              if (atRule.name === 'charset') atRule.remove()
-            }
-          }
+              if (atRule.name === 'charset') {
+                atRule.remove()
+              }
+            },
+          },
         },
         {
           postcssPlugin: 'vuetify-filter',
           Root(root) {
-            root.walkRules(rule => {
+            root.walkRules((rule) => {
               if (rule.selector && (rule.selector.includes('.v-') || rule.selector.includes('.mdi-'))) {
                 rule.remove()
               }
             })
-          }
-        }
-      ]
-    }
-  }
+          },
+        },
+      ],
+    },
+  },
+  server: {
+    port: 5003,
+    cors: true,
+    origin: 'http://localhost:5003',
+  },
 })
