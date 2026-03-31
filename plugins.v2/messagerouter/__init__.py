@@ -43,11 +43,11 @@ class MessageRouter(_PluginBase):
     # 插件名称
     plugin_name = "Vue-插件消息重定向"
     # 插件描述
-    plugin_desc = "可深度接管 MoviePilot 底层的通知中心与事件枢纽"
+    plugin_desc = "可深度接管 MoviePilot 底层的通知中心与事件枢纽。"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png"
     # 插件版本
-    plugin_version = "2.2.1"
+    plugin_version = "2.2.2"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -172,8 +172,8 @@ class MessageRouter(_PluginBase):
                     plugin_name = manager.get_plugin_attr(pid_str, "plugin_name") or pid_str
                 seen.add(pid_str.lower())
                 options.append({
-                    "title": f"{plugin_name} ({pid_str})" if str(plugin_name) != pid_str else pid_str,
-                    "value": pid_str,
+                    "title": str(plugin_name),
+                    "value": str(plugin_name),
                     "name": str(plugin_name),
                     "id": pid_str
                 })
@@ -582,7 +582,10 @@ class MessageRouter(_PluginBase):
             _PluginBase.original_post_message = _PluginBase.post_message
             def hooked_post_message(plugin_self, *args, **kwargs):
                 msg_data = self._extract_msg_args(*args, **kwargs)
-                if not msg_data['plugin_id']: msg_data['plugin_id'] = getattr(plugin_self, 'plugin_name', plugin_self.__class__.__name__)
+                if not msg_data['plugin_id']:
+                    p_name = getattr(plugin_self, 'plugin_name', plugin_self.__class__.__name__)
+                    p_module = getattr(plugin_self, '__module__', '')
+                    msg_data['plugin_id'] = f"{p_name} {p_module}"
                 if self._process_intercept(msg_data, args, kwargs, "常规通道"): return True
                 return _PluginBase.original_post_message(plugin_self, *args, **kwargs)
             _PluginBase.post_message = hooked_post_message
