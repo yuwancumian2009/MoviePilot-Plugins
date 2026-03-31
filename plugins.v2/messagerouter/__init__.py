@@ -1,12 +1,9 @@
-import inspect
 import json
-import re
+import sys
 import time
-import traceback
 import requests
 import importlib
 import asyncio
-from datetime import datetime
 from typing import Any, List, Dict, Tuple, Optional
 
 from app.log import logger
@@ -21,36 +18,222 @@ except ImportError:
     except ImportError:
         NotificationType = None
 
+try:
+    from app.schemas.types import SystemConfigKey
+except ImportError:
+    SystemConfigKey = None
+
+try:
+    from app.db.systemconfig_oper import SystemConfigOper
+except ImportError:
+    SystemConfigOper = None
+
+try:
+    from app.core.event import eventmanager
+except ImportError:
+    eventmanager = None
+
+try:
+    from app.core.plugin import PluginManager
+except ImportError:
+    PluginManager = None
+
 
 class MessageRouter(_PluginBase):
-    plugin_name = "插件消息重定向"
-    plugin_desc = "接管系统和插件通知，按插件名或关键字，重定向通知到指定类型或指定微信通知渠道"
+    # 插件名称
+    plugin_name = "Vue-插件消息重定向"
+    # 插件描述
+    plugin_desc = "可深度接管 MoviePilot 底层的通知中心与事件枢纽"
+    # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png"
-    plugin_version = "2.1.0" # 引入 Asyncio 异步函数自适应兼容，解除总线频道限制，彻底接管系统官方通知
+    # 插件版本
+    plugin_version = "2.2.1"
+    # 插件作者
     plugin_author = "yuwancumian"
+    # 作者主页
     author_url = "https://github.com/yuwancumian2009/MoviePilot-Plugins"
+    # 插件配置项 ID 前缀
     plugin_config_prefix = "messagerouter_"
+    # 加载顺序
     plugin_order = 20
+    # 可使用的用户级别
     auth_level = 1
 
-    _enabled = False
-    _block_system = False 
-    _plugin_mapping_str = ""
-    
-    _plugin_routes = {}  
-    _tokens_cache = {}   
-    _intercept_logs = []
-    
-    _apps_profile_cache = {}
-    _apps_profile_last_update = 0
+    # 配置与状态
+    _enabled: bool = False
+    _block_system: bool = False
+    _plugin_mapping_str: str = ""
 
+    # 路由、缓存与日志
+    _plugin_routes: Dict[str, Dict[str, str]] = {}
+    _tokens_cache: Dict[str, Dict[str, Any]] = {}
+    _intercept_logs: List[str] = []
+
+    # 系统通知配置缓存
+    _apps_profile_cache: Dict[str, Dict[str, Any]] = {}
+    _apps_profile_last_update: int = 0
+
+    # 企业微信接口
     _send_msg_url = "%s/cgi-bin/message/send?access_token=%s"
     _token_url = "%s/cgi-bin/gettoken?corpid=%s&corpsecret=%s"
 
-    _active_hooks = []
-    _pushed_msg_cache = {}
+    # 运行期 Hook 与消息去重缓存
+    _active_hooks: List[Tuple[Any, str, str]] = []
+    _pushed_msg_cache: Dict[int, float] = {}
 
-    def init_plugin(self, config: dict = None):
+    def __init__(self):
+        super().__init__()
+
+    @staticmethod
+    def _to_bool(value: Any) -> bool:
+        """将各种输入值转换为布尔值"""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _parse_plugin_routes(self, mapping_text: str) -> Dict[str, Dict[str, str]]:
+        """解析路由规则文本为结构化映射"""
+        routes: Dict[str, Dict[str, str]] = {}
+        for line in str(mapping_text or "").split('\n'):
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = [part.strip() for part in line.split(':')]
+            if len(parts) >= 2 and parts[0]:
+                routes[parts[0]] = {
+                    "type": parts[1],
+                    "app": parts[2] if len(parts) > 2 else ""
+                }
+        return routes
+
+    def _serialize_plugin_routes(self, rules: List[Dict[str, Any]]) -> str:
+        """将结构化规则序列化为兼容旧版的文本配置"""
+        lines: List[str] = []
+        for rule in rules or []:
+            plugin = str((rule or {}).get("plugin") or "").strip()
+            msg_type = str((rule or {}).get("type") or "").strip()
+            app = str((rule or {}).get("app") or "").strip()
+            if not plugin:
+                continue
+            lines.append(f"{plugin}:{msg_type}:{app}")
+        return "\n".join(lines)
+
+    def _normalize_route_rules(self, payload: Any) -> List[Dict[str, str]]:
+        """标准化前端提交的路由规则"""
+        normalized: List[Dict[str, str]] = []
+        for item in payload or []:
+            if not isinstance(item, dict):
+                continue
+            plugin = str(item.get("plugin") or item.get("plugin_id") or "").strip()
+            msg_type = str(item.get("type") or "").strip()
+            app = str(item.get("app") or "").strip()
+            if not plugin:
+                continue
+            normalized.append({
+                "plugin": plugin,
+                "type": msg_type,
+                "app": app
+            })
+        return normalized
+
+    def _get_route_rules(self) -> List[Dict[str, str]]:
+        """获取当前结构化规则列表"""
+        rules: List[Dict[str, str]] = []
+        for plugin, route in (self._plugin_routes or {}).items():
+            rules.append({
+                "plugin": str(plugin or ""),
+                "type": str((route or {}).get("type") or ""),
+                "app": str((route or {}).get("app") or "")
+            })
+        return rules
+
+    def _get_plugin_options(self) -> List[Dict[str, str]]:
+        """获取可选插件列表"""
+        options: List[Dict[str, str]] = []
+        seen = set()
+        try:
+            if not PluginManager:
+                return options
+            manager = PluginManager()
+            plugin_ids = []
+            if hasattr(manager, "get_running_plugin_ids"):
+                plugin_ids = manager.get_running_plugin_ids() or []
+            elif hasattr(manager, "get_plugin_ids"):
+                plugin_ids = manager.get_plugin_ids() or []
+
+            for pid in plugin_ids:
+                pid_str = str(pid or "").strip()
+                if not pid_str or pid_str.lower() in seen or pid_str == self.__class__.__name__:
+                    continue
+                plugin_name = pid_str
+                if hasattr(manager, "get_plugin_attr"):
+                    plugin_name = manager.get_plugin_attr(pid_str, "plugin_name") or pid_str
+                seen.add(pid_str.lower())
+                options.append({
+                    "title": f"{plugin_name} ({pid_str})" if str(plugin_name) != pid_str else pid_str,
+                    "value": pid_str,
+                    "name": str(plugin_name),
+                    "id": pid_str
+                })
+        except Exception as e:
+            logger.warn(f"{self.plugin_name}: 获取插件列表失败: {e}")
+        return sorted(options, key=lambda item: str(item.get("title") or item.get("value") or "").lower())
+
+    def _get_notification_type_options(self) -> List[Dict[str, str]]:
+        """获取可选消息类型列表"""
+        options = [{"title": "不修改", "value": ""}]
+        for label in ["资源下载", "整理入库", "订阅", "站点", "媒体服务器", "手动处理", "插件", "其它"]:
+            options.append({"title": label, "value": label})
+        return options
+
+    def _get_wechat_app_options(self) -> List[Dict[str, str]]:
+        """获取系统企业微信通知通道列表"""
+        return [
+            {"title": name, "value": name}
+            for name in sorted((self._get_system_wechat_apps() or {}).keys())
+        ]
+
+    def _build_overview(self) -> Dict[str, Any]:
+        """构建前端概览页面所需数据"""
+        self._apps_profile_last_update = 0
+        current_apps = self._get_system_wechat_apps()
+        rules = []
+        for plugin, route in self._plugin_routes.items():
+            t_type = route.get("type", "")
+            t_app = route.get("app", "")
+            desc = []
+            if t_type and t_type not in ["", "原类型", "不修改"]:
+                desc.append(f"改类型 ➔ [{t_type}]")
+            if t_app:
+                if t_app in current_apps:
+                    desc.append(f"企微直推 ➔ [{t_app}]")
+                else:
+                    desc.append(f"❌ 企微 [{t_app}] 未在系统中找到")
+            if not desc:
+                desc.append("无动作")
+            rules.append({
+                "plugin": plugin,
+                "type": t_type,
+                "app": t_app,
+                "description": " | ".join(desc)
+            })
+
+        return {
+            "enabled": self._enabled,
+            "block_system": self._block_system,
+            "plugin_mapping": str(self._plugin_mapping_str or ""),
+            "rule_count": len(rules),
+            "rules": rules,
+            "wechat_apps": current_apps,
+            "wechat_app_count": len(current_apps),
+            "logs": list(getattr(self, '_intercept_logs', []) or []),
+            "hook_count": len(getattr(self, '_active_hooks', []) or []),
+        }
+
+    def init_plugin(self, config: Optional[dict] = None) -> None:
+        """初始化插件并加载配置，同时挂载消息拦截能力"""
         self.stop_service()
         self._intercept_logs = []
         self._plugin_routes = {}
@@ -62,20 +245,11 @@ class MessageRouter(_PluginBase):
         self._tokens_cache = self.get_data("wecom_tokens") or {}
 
         if config:
-            self._enabled = config.get("enabled", False)
-            self._block_system = config.get("block_system", False)
+            self._enabled = self._to_bool(config.get("enabled", False))
+            self._block_system = self._to_bool(config.get("block_system", False))
             self._plugin_mapping_str = config.get("plugin_mapping", "")
 
-        if self._plugin_mapping_str:
-            for line in str(self._plugin_mapping_str).split('\n'):
-                line = line.strip()
-                if not line or line.startswith('#'): continue
-                parts = line.split(':')
-                if len(parts) >= 2:
-                    plugin_name = parts[0].strip()
-                    target_type = parts[1].strip()
-                    target_app = parts[2].strip() if len(parts) > 2 else ""
-                    self._plugin_routes[plugin_name] = {"type": target_type, "app": target_app}
+        self._plugin_routes = self._parse_plugin_routes(self._plugin_mapping_str)
 
         self._type_map = {}
         if NotificationType:
@@ -97,14 +271,15 @@ class MessageRouter(_PluginBase):
             self._patch_event_bus()      
             self._patch_message_utils()  
 
-    def _get_system_wechat_apps(self) -> dict:
+    def _get_system_wechat_apps(self) -> Dict[str, Dict[str, Any]]:
+        """读取系统内已配置的企业微信通知通道"""
         now = time.time()
         if now - self._apps_profile_last_update < 30 and self._apps_profile_cache:
             return self._apps_profile_cache
         apps = {}
         try:
-            from app.db.systemconfig_oper import SystemConfigOper
-            from app.schemas.types import SystemConfigKey
+            if not SystemConfigOper or not SystemConfigKey:
+                return apps
             notifies = SystemConfigOper().get(SystemConfigKey.Notifications) or []
             
             for conf in notifies:
@@ -131,66 +306,84 @@ class MessageRouter(_PluginBase):
         except Exception as e: pass
         return apps
 
-    def get_state(self) -> bool: return self._enabled
+    def get_state(self) -> bool:
+        """获取插件启用状态"""
+        return self._enabled
+
     @staticmethod
-    def get_command() -> List[Dict[str, Any]]: return []
-    def get_api(self) -> List[Dict[str, Any]]: return []
-    def get_service(self) -> List[Dict[str, Any]]: return []
-    def get_render_mode(self) -> Tuple[str, str]: return "vuetify", ""
+    def get_command() -> List[Dict[str, Any]]:
+        """注册插件命令"""
+        return []
+
+    def get_api(self) -> List[Dict[str, Any]]:
+        """注册插件 API"""
+        return [
+            {
+                "path": "/config",
+                "endpoint": self._api_get_config,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "获取插件配置"
+            },
+            {
+                "path": "/config",
+                "endpoint": self._api_save_config,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "保存插件配置"
+            },
+            {
+                "path": "/overview",
+                "endpoint": self._api_get_overview,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "获取插件概览"
+            },
+            {
+                "path": "/logs",
+                "endpoint": self._api_get_logs,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "获取拦截日志"
+            },
+            {
+                "path": "/status",
+                "endpoint": self._api_get_status,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "获取状态摘要"
+            },
+            {
+                "path": "/options",
+                "endpoint": self._api_get_options,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "获取路由规则选项"
+            }
+        ]
+
+    def get_service(self) -> List[Dict[str, Any]]:
+        """注册插件服务"""
+        return []
+
+    def get_render_mode(self) -> Tuple[str, str]:
+        """返回 Vue 联邦渲染模式"""
+        return "vue", "dist/assets"
 
     def _add_log(self, msg: str):
+        """写入拦截日志，仅保留最近 50 条"""
         if not hasattr(self, '_intercept_logs'): self._intercept_logs = []
         now = time.strftime("%H:%M:%S", time.localtime())
         self._intercept_logs.insert(0, f"[{now}] {msg}")
         if len(self._intercept_logs) > 50: self._intercept_logs.pop()
 
-    def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        return [{
-            "component": "VForm",
-            "content": [
-                {
-                    "component": "VRow",
-                    "content": [
-                        {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [{"component": "VSwitch", "props": {"model": "enabled", "label": "启用高级路由与企微直推"}}]},
-                        {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [{"component": "VSwitch", "props": {"model": "block_system", "label": "直推后阻断系统默认广播 (防止重复通知)"}}]}
-                    ]
-                },
-                {
-                    "component": "VRow",
-                    "content": [{"component": "VCol", "props": {"cols": 12}, "content": [{"component": "VTextarea", "props": {"model": "plugin_mapping", "label": "高级消息路由映射规则", "rows": 10, "placeholder": "语法：[插件名称/关键字] : [目标消息类型] : [系统微信通知名称]\n\n【配置说明】：\n1. 匹配优先级：精确匹配优先于标题/正文关键字模糊匹配。\n2. 系统通知与特殊插件配置：接管系统官方消息（如添加订阅）或特殊插件时，请直接使用其通知标题中包含的关键字（如“添加订阅”、“115网盘”）。\n3. 执行优先级：若同时配置了通知类型修改和企微通知渠道，系统将优先执行拦截与企微直推。\n\n【配置示例】 (中间不改类型请留空)：\n115网盘::通知1\n添加订阅:其他:通知2\n豆瓣同步:整理入库:"}}]}]
-                }
-            ]
-        }], {
-            "enabled": True if self._enabled else False,
-            "block_system": True if self._block_system else False,
-            "plugin_mapping": str(self._plugin_mapping_str) if self._plugin_mapping_str else ""
-        }
+    def get_form(self) -> Tuple[Optional[List[dict]], Dict[str, Any]]:
+        """Vue 模式下返回 None 和初始配置"""
+        return None, self._api_get_config()
 
     def get_page(self) -> List[dict]:
-        if not self._enabled: return [{'component': 'VAlert', 'props': {'type': 'warning', 'text': '插件未启用，请前往配置开启。', 'class': 'mt-5'}}]
-        self._apps_profile_last_update = 0 
-        current_apps = self._get_system_wechat_apps()
-        rules_text = "【当前生效的规则】\n"
-        if not self._plugin_routes: rules_text += "暂无规则\n"
-        else:
-            for plugin, route in self._plugin_routes.items():
-                t_type = route.get("type", "")
-                t_app = route.get("app", "")
-                desc = []
-                if t_type and t_type not in ["", "原类型", "不修改"]: desc.append(f"改类型 ➔ [{t_type}]")
-                if t_app:
-                    if t_app in current_apps: desc.append(f"企微直推 ➔ [{t_app}]")
-                    else: desc.append(f"❌ 企微 [{t_app}] 未在系统中找到")
-                if not desc: desc.append("无动作")
-                rules_text += f" • {plugin} : {' | '.join(desc)}\n"
-                
-        apps_text = "\n【系统通知提取状态】\n" + (f"✅ 成功获取 {len(current_apps)} 个系统微信通知配置: {', '.join(current_apps.keys())}\n" if current_apps else "⚠️ 警告: 目前未获取到任何微信通知配置。\n")
-        logs_text = "【实时路由监控日志 (最近50条)】\n" + ("\n".join(self._intercept_logs) if getattr(self, '_intercept_logs', []) else "暂无日志。")
-
-        return [
-            {'component': 'VCard', 'props': {'class': 'mb-4'}, 'content': [{'component': 'VCardText', 'text': rules_text + apps_text, 'props': {'style': 'white-space: pre-wrap; font-size: 15px; font-weight: bold; color: #1976D2;'}}]},
-            {'component': 'VCard', 'content': [{'component': 'VCardText', 'text': logs_text, 'props': {'style': 'white-space: pre-wrap; font-family: monospace; max-height: 400px; overflow-y: auto;'}}]}
-        ]
+        """Vue 模式下返回空页面定义"""
+        return []
 
     def __get_access_token(self, app_alias: str, current_apps: dict, force: bool = False) -> str:
         app_info = current_apps.get(app_alias)
@@ -379,7 +572,7 @@ class MessageRouter(_PluginBase):
                 for a in args: _destroy(a)
                 for v in kwargs.values(): _destroy(v)
 
-                return True # 返回 True 阻断底层的后续动作
+                return True # 返回 True 彻底阻断底层的后续广播
 
         return False # 不阻断，带着修改后的类型放行给系统
 
@@ -397,40 +590,42 @@ class MessageRouter(_PluginBase):
 
     def _patch_event_bus(self):
         try:
-            from app.core.event import eventmanager
+            if not eventmanager:
+                return
             publish_method_name = next((m for m in ['send_event', 'publish_event', 'publish'] if hasattr(eventmanager, m)), None)
             if not publish_method_name or hasattr(eventmanager, 'original_publish_event_router'): return
-            
             original_publish = getattr(eventmanager, publish_method_name)
             setattr(eventmanager, 'original_publish_event_router', original_publish)
-            
-            # 兼容异步事件总线 (如果存在的话)
+
             if asyncio.iscoroutinefunction(original_publish):
                 async def hooked_publish_event(*args, **kwargs):
                     try:
                         msg_data = self._extract_msg_args(*args, **kwargs)
                         if msg_data['title'] or msg_data['text']:
-                            if self._process_intercept(msg_data, args, kwargs, "异步事件总线"): return True
-                    except: pass
+                            if self._process_intercept(msg_data, args, kwargs, "异步事件总线"):
+                                return True
+                    except:
+                        pass
                     return await getattr(eventmanager, 'original_publish_event_router')(*args, **kwargs)
+
                 setattr(eventmanager, publish_method_name, hooked_publish_event)
             else:
                 def hooked_publish_event(*args, **kwargs):
                     try:
-                        # 全盘扫描，不再局限于特定 event_type
                         msg_data = self._extract_msg_args(*args, **kwargs)
                         if msg_data['title'] or msg_data['text']:
-                            if self._process_intercept(msg_data, args, kwargs, "事件总线"): return True
-                    except: pass
+                            if self._process_intercept(msg_data, args, kwargs, "事件总线"):
+                                return True
+                    except:
+                        pass
                     return getattr(eventmanager, 'original_publish_event_router')(*args, **kwargs)
+
                 setattr(eventmanager, publish_method_name, hooked_publish_event)
         except: pass
 
     def _patch_message_utils(self):
-        import sys
         hook_count = 0
-        
-        # 1. 挂载 MoviePilot 官方系统的核心类方法链路 (针对 添加订阅、整理入库 等官方通知)
+
         class_candidates = [
             ("app.chain.message", ["MessageChain"]),
             ("app.modules.message", ["MessageModule", "Message"]), 
@@ -444,7 +639,7 @@ class MessageRouter(_PluginBase):
             ("app.modules.bark", ["BarkModule", "Bark"])
         ]
         methods_to_find = ['process', 'add_message', 'send_message', 'send_msg', 'send', 'post_message', 'notify', 'put']
-        
+
         for mod_name, class_names in class_candidates:
             try:
                 mod = importlib.import_module(mod_name)
@@ -455,9 +650,9 @@ class MessageRouter(_PluginBase):
                             if hasattr(target_class, method_name) and callable(getattr(target_class, method_name)):
                                 self._apply_deep_hook(target_class, method_name, mod_name, is_module=False)
                                 hook_count += 1
-            except Exception: pass
+            except Exception:
+                pass
 
-        # 2. 挂载全局裸函数模块 (针对野生插件)
         for mod_name, mod in list(sys.modules.items()):
             if not (mod_name.startswith('app.') or mod_name.startswith('plugins.')): continue
             if 'messagerouter' in mod_name.lower(): continue
@@ -466,7 +661,7 @@ class MessageRouter(_PluginBase):
                 if hasattr(mod, func_name) and callable(getattr(mod, func_name)):
                     self._apply_deep_hook(mod, func_name, mod_name, is_module=True)
                     hook_count += 1
-                    
+
         self._add_log(f"✅ 底层路由开启：已成功挂载 {hook_count} 个系统与插件发信枢纽")
 
     def _apply_deep_hook(self, target_obj, method_name, mod_name, is_module=False):
@@ -479,7 +674,6 @@ class MessageRouter(_PluginBase):
         if not hasattr(self, '_active_hooks'): self._active_hooks = []
         self._active_hooks.append((target_obj, method_name, hook_attr_name))
         
-        # 智能探测并兼容异步方法 (asyncio)
         if asyncio.iscoroutinefunction(original_method):
             async def hooked_send_msg_async(*args, **kwargs):
                 try:
@@ -488,8 +682,10 @@ class MessageRouter(_PluginBase):
                         display_name = f"{mod_name}.{method_name}" if is_module else f"{target_obj.__name__}.{method_name}"
                         if self._process_intercept(msg_data, args, kwargs, f"底层异步模块: {display_name}"):
                             return True
-                except: pass
+                except:
+                    pass
                 return await getattr(target_obj, hook_attr_name)(*args, **kwargs)
+
             setattr(target_obj, method_name, hooked_send_msg_async)
         else:
             def hooked_send_msg_sync(*args, **kwargs):
@@ -499,8 +695,10 @@ class MessageRouter(_PluginBase):
                         display_name = f"{mod_name}.{method_name}" if is_module else f"{target_obj.__name__}.{method_name}"
                         if self._process_intercept(msg_data, args, kwargs, f"底层模块: {display_name}"):
                             return True
-                except: pass
+                except:
+                    pass
                 return getattr(target_obj, hook_attr_name)(*args, **kwargs)
+
             setattr(target_obj, method_name, hooked_send_msg_sync)
 
     def stop_service(self):
@@ -510,8 +708,7 @@ class MessageRouter(_PluginBase):
                 delattr(_PluginBase, 'original_post_message')
         except: pass
         try:
-            from app.core.event import eventmanager
-            if hasattr(eventmanager, 'original_publish_event_router'):
+            if eventmanager and hasattr(eventmanager, 'original_publish_event_router'):
                 for method in ['send_event', 'publish_event', 'publish']:
                     if hasattr(eventmanager, method):
                         setattr(eventmanager, method, eventmanager.original_publish_event_router)
@@ -527,3 +724,55 @@ class MessageRouter(_PluginBase):
                 self._active_hooks = []
         except: pass
         self._add_log("🛑 插件已停用，所有拦截路由已安全撤销。")
+
+    def _api_get_config(self) -> Dict[str, Any]:
+        return {
+            "enabled": self._enabled,
+            "block_system": self._block_system,
+            "plugin_mapping": str(self._plugin_mapping_str or ""),
+            "route_rules": self._get_route_rules()
+        }
+
+    def _api_save_config(self, payload: dict = None) -> Dict[str, Any]:
+        payload = payload or {}
+        try:
+            route_rules = self._normalize_route_rules(payload.get("route_rules"))
+            plugin_mapping = payload.get("plugin_mapping", self._plugin_mapping_str or "")
+            if route_rules:
+                plugin_mapping = self._serialize_plugin_routes(route_rules)
+            new_config = {
+                "enabled": self._to_bool(payload.get("enabled", self._enabled)),
+                "block_system": self._to_bool(payload.get("block_system", self._block_system)),
+                "plugin_mapping": str(plugin_mapping or "")
+            }
+            self.init_plugin(new_config)
+            self.update_config(new_config)
+            return {"success": True, "msg": "配置已保存", "config": self._api_get_config()}
+        except Exception as e:
+            logger.error(f"{self.plugin_name}: 保存配置失败: {e}")
+            return {"success": False, "msg": str(e)}
+
+    def _api_get_overview(self) -> Dict[str, Any]:
+        return self._build_overview()
+
+    def _api_get_logs(self) -> Dict[str, Any]:
+        return {"logs": list(getattr(self, '_intercept_logs', []) or [])}
+
+    def _api_get_status(self) -> Dict[str, Any]:
+        overview = self._build_overview()
+        return {
+            "enabled": overview.get("enabled", False),
+            "block_system": overview.get("block_system", False),
+            "rule_count": overview.get("rule_count", 0),
+            "wechat_app_count": overview.get("wechat_app_count", 0),
+            "hook_count": overview.get("hook_count", 0),
+            "latest_log": overview.get("logs", [None])[0],
+        }
+
+    def _api_get_options(self) -> Dict[str, Any]:
+        """获取配置页下拉选项"""
+        return {
+            "plugins": self._get_plugin_options(),
+            "notification_types": self._get_notification_type_options(),
+            "wechat_apps": self._get_wechat_app_options(),
+        }
