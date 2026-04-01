@@ -3,12 +3,13 @@
     "name": "Vue-插件消息重定向",
     "description": "可深度接管 MoviePilot 底层的通知中心与事件枢纽。",
     "labels": "系统",
-    "version": "2.2.2",
+    "version": "2.2.3",
     "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png",
     "author": "yuwancumian,KoWming",
     "level": 1,
     "release": true,
     "history": {
+      "v2.2.3": "感谢KoWming大佬做的vue版本！",
       "v2.2.2": "修复前端下拉选择插件存为英文ID导致拦截匹配失败的问题，并增强下层校验完成新老数据格式双向兼容。",
       "v2.2.1": "适配VUE联邦插件系统，重构代码结构，优化性能。"
     }
