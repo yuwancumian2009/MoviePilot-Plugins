@@ -49,7 +49,7 @@ class MessageRouter(_PluginBase):
     # 插件版本
     plugin_version = "2.2.2"
     # 插件作者
-    plugin_author = "yuwancumian"
+    plugin_author = "yuwancumian,KoWming"
     # 作者主页
     author_url = "https://github.com/yuwancumian2009/MoviePilot-Plugins"
     # 插件配置项 ID 前缀
