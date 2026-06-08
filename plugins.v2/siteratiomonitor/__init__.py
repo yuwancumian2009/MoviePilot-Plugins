@@ -14,7 +14,7 @@ class SiteRatioMonitor(_PluginBase):
     # 插件名称
     plugin_name = "站点分享率提醒"
     # 插件描述
-    plugin_desc = "自定义各站点分享率预警线，无论结果如何都将发送完整的执行报告。"
+    plugin_desc = "自定义各站点分享率预警线，发送分享率预警提醒。"
     # 插件图标
     plugin_icon = "" 
     # 插件版本
