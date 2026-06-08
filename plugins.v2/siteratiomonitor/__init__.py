@@ -21,6 +21,8 @@ class SiteRatioMonitor(_PluginBase):
     plugin_version = "1.0.0"
     # 插件作者
     plugin_author = "yuwancumian"
+    # 作者主页
+    author_url = "https://github.com/yuwancumian2009/MoviePilot-Plugins"
     # 插件配置项ID前缀
     plugin_config_prefix = "siteratiomonitor_"
     # 加载顺序
