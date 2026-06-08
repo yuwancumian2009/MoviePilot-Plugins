@@ -22,7 +22,7 @@
     "icon": "",
     "author": "yuwancumian",
     "level": 1,
-    "release": true,
+    "release": false,
     "history": {
       "v1.0.0": "自定义各站点分享率预警线，发送分享率预警提醒。"
     }
