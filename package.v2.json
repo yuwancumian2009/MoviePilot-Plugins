@@ -15,16 +15,16 @@
     }
   },
   "SiteRatioMonitor": {
-  "name": "站点分享率提醒",
-  "description": "自定义各站点分享率预警线，发送分享率预警提醒。",
-  "labels": "系统",
-  "version": "1.0.0",
-  "icon": "",
-  "author": "yuwancumian",
-  "level": 1,
-  "release": true,
-  "history": {
-    "v1.0.0": "自定义各站点分享率预警线，发送分享率预警提醒。"
-   }
- }
+    "name": "站点分享率提醒",
+    "description": "自定义各站点分享率预警线，发送分享率预警提醒。",
+    "labels": "系统",
+    "version": "1.0.0",
+    "icon": "",
+    "author": "yuwancumian",
+    "level": 1,
+    "release": true,
+    "history": {
+      "v1.0.0": "自定义各站点分享率预警线，发送分享率预警提醒。"
+    }
+  }
 }
