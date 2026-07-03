@@ -26,5 +26,18 @@
     "history": {
       "v1.0.0": "自定义各站点分享率预警线，发送分享率预警提醒。"
     }
+  },
+  "DoubanDoulist": {
+    "name": "豆瓣片单订阅下载",
+    "description": "监控并同步特定的豆瓣片单（Doulist），自动将内部影片添加至MP订阅或搜索下载，支持为不同片单指定独立存储路径。",
+    "labels": "系统",
+    "version": "1.0.0",
+    "icon": "",
+    "author": "yuwancumian",
+    "level": 1,
+    "release": false,
+    "history": {
+      "v1.0.0": "监控并同步特定的豆瓣片单（Doulist），自动将内部影片添加至MP订阅或搜索下载，支持为不同片单指定独立存储路径。"
+    }
   }
 }
