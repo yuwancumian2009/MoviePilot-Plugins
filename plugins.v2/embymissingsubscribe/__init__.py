@@ -17,6 +17,7 @@ from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import NotificationType
 from app.schemas.types import EventType, MediaType
+from app.db.transferhistory_oper import TransferHistoryOper  # 引入原生历史记录管理工具
 
 lock = threading.Lock()
 
@@ -25,13 +26,13 @@ class EmbyMissingSubscribe(_PluginBase):
     """扫描 Emby 媒体库中的遗漏剧集和电影合集，自动添加 MoviePilot 订阅"""
 
     # 插件名称
-    plugin_name = "Emby 缺失订阅（魔改自用）"
+    plugin_name = "Emby 缺失订阅（魔改自用版）"
     # 插件描述
-    plugin_desc = "扫描 Emby 媒体库中的遗漏剧集和电影合集（BoxSet），自动订阅缺失内容，增加跳过缺失整季剧集"
+    plugin_desc = "扫描 Emby 媒体库中的遗漏剧集和电影合集（BoxSet），自动订阅缺失内容并全自动清理历史整理记录"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png"
     # 插件版本
-    plugin_version = "1.1.0"
+    plugin_version = "1.1.5"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -51,7 +52,7 @@ class EmbyMissingSubscribe(_PluginBase):
     _skip_future: bool = True
     _enable_episodes: bool = True
     _enable_collections: bool = False
-    _skip_entire_missing: bool = True  # 新增属性：默认开启跳过整季遗漏
+    _skip_entire_missing: bool = True
 
     # 运行时
     mediaserver_helper = None
@@ -65,6 +66,7 @@ class EmbyMissingSubscribe(_PluginBase):
         self.mediaserver_helper = MediaServerHelper()
         self._media_chain = MediaChain()
         self._subscribe_chain = SubscribeChain()
+        self._transferhistory_oper = TransferHistoryOper()  # 初始化原生操作实例
 
         if config:
             self._enabled = config.get("enabled", False)
@@ -76,7 +78,7 @@ class EmbyMissingSubscribe(_PluginBase):
             self._skip_future = config.get("skip_future", True)
             self._enable_episodes = config.get("enable_episodes", True)
             self._enable_collections = config.get("enable_collections", False)
-            self._skip_entire_missing = config.get("skip_entire_missing", True)  # 新增配置读取
+            self._skip_entire_missing = config.get("skip_entire_missing", True)
 
         # 构建媒体库列表（供表单选择用）
         if self._mediaservers:
@@ -105,7 +107,7 @@ class EmbyMissingSubscribe(_PluginBase):
                 "skip_future": self._skip_future,
                 "enable_episodes": self._enable_episodes,
                 "enable_collections": self._enable_collections,
-                "skip_entire_missing": self._skip_entire_missing,  # 新增配置保存
+                "skip_entire_missing": self._skip_entire_missing,
             })
             if self._scheduler.get_jobs():
                 self._scheduler.print_jobs()
@@ -162,7 +164,7 @@ class EmbyMissingSubscribe(_PluginBase):
 
     def scan_missing(self):
         """
-        入口：遍历所有已配置的 Emby 服务器，按开关执行遗漏剧集和合集扫描
+        入口：遍历所有已配置 of Emby 服务器，按开关执行遗漏剧集和合集扫描
         """
         with lock:
             if not self._mediaservers:
@@ -311,6 +313,18 @@ class EmbyMissingSubscribe(_PluginBase):
 
                     # 获取年份
                     year = str(episodes[0].get("ProductionYear", ""))
+
+                    # 在执行订阅前，自动连带清理 MoviePilot 中该集积攒的历史整理记录
+                    for ep in episodes:
+                        ep_num = ep.get("IndexNumber")
+                        if ep_num is not None:
+                            self._delete_transfer_history(
+                                title=series_name,
+                                mtype=MediaType.TV,
+                                season=season,
+                                episode=int(ep_num),
+                                tmdb_id=tmdb_id
+                            )
 
                     # 创建订阅
                     sub_id, msg = self._subscribe_chain.add(
@@ -465,6 +479,13 @@ class EmbyMissingSubscribe(_PluginBase):
                 )
                 continue
 
+            # 在执行合集中的电影订阅前，同样自动清理可能存在的电影整理历史记录
+            self._delete_transfer_history(
+                title=movie.title,
+                mtype=MediaType.MOVIE,
+                tmdb_id=movie.tmdb_id
+            )
+
             # 创建订阅
             sid, msg = SubscribeChain().add(
                 title=movie.title,
@@ -504,8 +525,75 @@ class EmbyMissingSubscribe(_PluginBase):
         return added_list
 
     # ================================================================
-    # Emby API 交互
+    # Emby API & MP DB 交互
     # ================================================================
+
+    def _delete_transfer_history(
+        self,
+        title: str,
+        mtype: MediaType,
+        season: Optional[int] = None,
+        episode: Optional[int] = None,
+        tmdb_id: Optional[int] = None
+    ):
+        """
+        利用 MoviePilot 内置的 TransferHistoryOper 工具类来安全查找并删除整理记录
+        """
+        if not tmdb_id:
+            return
+        try:
+            # 确保工具对象已被初始化
+            if not hasattr(self, '_transferhistory_oper') or not self._transferhistory_oper:
+                self._transferhistory_oper = TransferHistoryOper()
+
+            # 1. 优先尝试使用标准官方 API 按 tmdbid 抓取历史数据（比标题匹配更精准）
+            histories = []
+            if mtype == MediaType.TV:
+                try:
+                    # 尝试带季、集的多条件交叉联合定位
+                    histories = self._transferhistory_oper.get_by(tmdbid=tmdb_id, season=season, episode=episode) or []
+                except Exception:
+                    try:
+                        # 降级：部分老版本 get_by 方法对多参数支持有差异，回退至纯 id 获取
+                        histories = self._transferhistory_oper.get_by(tmdbid=tmdb_id) or []
+                    except Exception:
+                        pass
+            else:
+                try:
+                    histories = self._transferhistory_oper.get_by(tmdbid=tmdb_id) or []
+                except Exception:
+                    pass
+
+            # 2. 兜底策略：如果是未刮削或旧历史记录可能未录入 tmdbid，退回到使用标题（title）匹配
+            if not histories and title:
+                try:
+                    histories = self._transferhistory_oper.get_by(title=title) or []
+                except Exception:
+                    pass
+
+            deleted_count = 0
+            for history in histories:
+                # 若使用了降级（纯 id 或纯标题获取），需在 Python 层进行季、集的二次严苛双重过滤
+                if mtype == MediaType.TV:
+                    h_season = getattr(history, "season", None)
+                    h_episode = getattr(history, "episode", None)
+                    if h_season is not None and int(h_season) != int(season):
+                        continue
+                    if h_episode is not None and int(h_episode) != int(episode):
+                        continue
+
+                # 调用原生规范的物理删除方法
+                if hasattr(history, "id") and history.id:
+                    self._transferhistory_oper.delete(history.id)
+                    deleted_count += 1
+
+            if deleted_count > 0:
+                if mtype == MediaType.TV:
+                    logger.info(f"【Emby缺失订阅】检测到网盘虚拟文件丢失，已自动出栈并清理历史整理记录: {title} S{season:02d}E{episode:02d} (共 {deleted_count} 条)")
+                else:
+                    logger.info(f"【Emby缺失订阅】检测到网盘虚拟文件丢失，已自动出栈并清理历史整理记录: {title} (共 {deleted_count} 条)")
+        except Exception as e:
+            logger.error(f"【Emby缺失订阅】自动清理历史整理记录失败 {title}: {e}")
 
     def _has_existing_episodes(
         self, service, user_id: str, series_id: str, season: int
