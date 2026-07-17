@@ -26,7 +26,7 @@ class EmbyMissingSubscribe(_PluginBase):
     """扫描 Emby 媒体库中的遗漏剧集和电影合集，自动添加 MoviePilot 订阅"""
 
     # 插件名称
-    plugin_name = "Emby 缺失订阅（魔改自用版）"
+    plugin_name = "Emby 缺失订阅（自用）"
     # 插件描述
     plugin_desc = "扫描 Emby 媒体库中的遗漏剧集和电影合集（BoxSet），自动订阅缺失内容并全自动清理历史整理记录"
     # 插件图标
