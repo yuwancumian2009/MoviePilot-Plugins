@@ -77,7 +77,7 @@ class RssInfo(TypedDict):
 
 class DoubanRankPlus(_PluginBase):
     # 插件名称
-    plugin_name = "豆瓣榜单Plus魔改版"
+    plugin_name = "豆瓣榜单Plus（自用）"
     # 插件描述
     plugin_desc = "豆瓣热门榜单Plus魔改版，去除豆瓣API比对"
     # 插件图标
@@ -85,7 +85,7 @@ class DoubanRankPlus(_PluginBase):
     # 插件版本
     plugin_version = "2.0.0"
     # 插件作者
-    plugin_author = "yuwancumian2009"
+    plugin_author = "yuwancumian"
     # 作者主页
     author_url = "https://github.com/yuwancumian2009/MoviePilot-Plugins"
     # 插件配置项ID前缀
