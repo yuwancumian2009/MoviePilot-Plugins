@@ -81,7 +81,7 @@ class DoubanRankPlus(_PluginBase):
     # 插件描述
     plugin_desc = "豆瓣热门榜单Plus魔改版，去除豆瓣API比对"
     # 插件图标
-    plugin_icon = "https://raw.githubusercontent.com/boeto/MoviePilot-Plugins/main/icons/DouBanRankPlus.png"
+    plugin_icon = ""
     # 插件版本
     plugin_version = "1.0.0"
     # 插件作者
