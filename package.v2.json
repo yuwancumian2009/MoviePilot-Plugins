@@ -59,7 +59,7 @@
     "description": "豆瓣热门榜单Plus魔改版，去除豆瓣API比对",
     "labels": "系统",
     "version": "2.0.0",
-    "icon": "https://raw.githubusercontent.com/justzerock/MoviePilot-Plugins/main/icons/emby.png",
+    "icon": "https://raw.githubusercontent.com/boeto/MoviePilot-Plugins/main/icons/DouBanRankPlus.png",
     "author": "yuwancumian",
     "level": 1,
     "release": false,
