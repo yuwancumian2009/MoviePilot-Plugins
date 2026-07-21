@@ -54,7 +54,7 @@
       "v1.1.13": "联动删除遗漏集的残留整理记录"
     }
   },
-  "DoubanRankPlus": {
+  "DoubanRankPlus2": {
     "name": "豆瓣榜单Plus（自用）",
     "description": "豆瓣热门榜单Plus魔改版，去除豆瓣API比对",
     "labels": "系统",
