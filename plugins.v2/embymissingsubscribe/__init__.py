@@ -22,7 +22,7 @@ from app.schemas.types import EventType, MediaType
 lock = threading.Lock()
 
 
-class EmbyMissingSubscribe(_PluginBase):
+class EmbyMissingSubscribe2(_PluginBase):
     """扫描 Emby 媒体库中的遗漏剧集和电影合集，自动添加 MoviePilot 订阅"""
 
     # 插件名称
@@ -38,7 +38,7 @@ class EmbyMissingSubscribe(_PluginBase):
     # 作者主页
     author_url = "https://github.com/yuwancumian2009/MoviePilot-Plugins"
     # 插件配置项 ID 前缀
-    plugin_config_prefix = "embymissingsubscribe_"
+    plugin_config_prefix = "embymissingsubscribe2_"
     # 加载顺序
     plugin_order = 10
     # 可使用的用户级别
