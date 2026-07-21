@@ -40,7 +40,7 @@
       "v1.0.0": "监控并同步特定的豆瓣片单（Doulist），自动将内部影片添加至MP订阅或搜索下载，支持为不同片单指定独立存储路径。"
     }
   },
-  "EmbyMissingSubscribe": {
+  "EmbyMissingSubscribe2": {
     "name": "Emby 缺失订阅（自用）",
     "description": "扫描 Emby 媒体库中的遗漏剧集和电影合集（BoxSet），自动订阅缺失内容，增加跳过缺失整季剧集",
     "labels": "系统",
