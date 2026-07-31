@@ -67,18 +67,5 @@
       "v1.0.0": "豆瓣热门榜单Plus魔改版，去除豆瓣API比对",
       "v1.2.0": "监控手动取消的订阅不再自动添加"
     }
-  },
-  "DoubanFolio2": {
-    "name": "豆瓣档案(自用版)",
-    "description": "追剧观影自动同步进度到豆瓣，打造专属观影档案",
-    "labels": "系统",
-    "version": "1.1.0",
-    "icon": "",
-    "author": "yuwancumian",
-    "level": 1,
-    "release": false,
-    "history": {
-      "v1.1.0": "增加自动从cookiecloud同步豆瓣ck"
-    }
   }
 }
