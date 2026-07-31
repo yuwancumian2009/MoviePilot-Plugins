@@ -12,8 +12,9 @@ from apscheduler.triggers.cron import CronTrigger
 from enum import Enum
 
 from app.schemas import Response
-from app.schemas.types import MediaType
+from app.schemas.types import MediaType, EventType
 from app.core.context import MediaInfo
+from app.core.event import Event as ManagerEvent, eventmanager
 from app.core.meta.metabase import MetaBase
 from app.chain.download import DownloadChain
 from app.chain.media import MediaChain
@@ -32,9 +33,12 @@ class Status(Enum):
     UNCATEGORIZED = "已识别未分类"
     YEAR_NOT_MATCH = "年份不符合"
     RATING_NOT_MATCH = "评分不符合"
+    RATING_PENDING = "等待评分复查"
+    RETRY_LATER = "等待重试"
     MEDIA_EXISTS = "媒体库已存在"
     SUBSCRIPTION_EXISTS = "订阅已存在"
     SUBSCRIPTION_ADDED = "已添加订阅"
+    SUBSCRIPTION_CANCELLED = "已手动取消订阅"
 
 
 class HistoryDataType(Enum):
@@ -79,11 +83,11 @@ class DoubanRankPlus2(_PluginBase):
     # 插件名称
     plugin_name = "豆瓣榜单Plus（自用）"
     # 插件描述
-    plugin_desc = "豆瓣热门榜单Plus魔改版，去除豆瓣API比对"
+    plugin_desc = "豆瓣榜单增强订阅：综艺季识别、TMDB系列评分与可重试历史"
     # 插件图标
     plugin_icon = ""
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.2.0"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -138,6 +142,16 @@ class DoubanRankPlus2(_PluginBase):
     _history_type: str = HistoryDataType.LATEST.value
     _is_exit_ip_rate_limit: bool = False
     _is_only_movies: bool = False
+    _allow_unrated: bool = True
+    _use_series_rating: bool = True
+    _min_vote_count: int = 20
+    _title_aliases_raw: str = ""
+    _title_aliases: Dict[str, str] = {}
+
+    # 本插件创建过的订阅及用户手动取消后的抑制列表。
+    # 数据使用 _PluginBase.save_data 持久化，不依赖插件配置保存。
+    _managed_subscriptions_data_key = "managed_subscriptions"
+    _cancelled_subscriptions_data_key = "cancelled_subscriptions"
 
     _migrate_from_url = ""
     _migrate_api_token = ""
@@ -155,6 +169,13 @@ class DoubanRankPlus2(_PluginBase):
             self._onlyonce = config.get("onlyonce", False)
             self._is_seasons_all = config.get("is_seasons_all", True)
             self._is_only_movies = config.get("is_only_movies", False)
+            self._allow_unrated = config.get("allow_unrated", True)
+            self._use_series_rating = config.get("use_series_rating", True)
+            self._min_vote_count = self.__safe_int(
+                config.get("min_vote_count", 20), default=20, minimum=0
+            )
+            self._title_aliases_raw = str(config.get("title_aliases", "") or "")
+            self._title_aliases = self.__parse_title_aliases(self._title_aliases_raw)
 
             self._migrate_from_url = config.get("migrate_from_url", "")
             self._migrate_api_token = config.get("migrate_api_token", "")
@@ -419,6 +440,32 @@ class DoubanRankPlus2(_PluginBase):
                                         {
                                             "component": "VSwitch",
                                             "props": {
+                                                "model": "allow_unrated",
+                                                "label": "允许未出分影视",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 6, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
+                                                "model": "use_series_rating",
+                                                "label": "未出分时参考系列评分",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 6, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
                                                 "model": "clear",
                                                 "label": "清理历史记录",
                                             },
@@ -492,7 +539,7 @@ class DoubanRankPlus2(_PluginBase):
                                 },
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 6},
+                                    "props": {"cols": 12, "md": 3},
                                     "content": [
                                         {
                                             "component": "VTextField",
@@ -504,6 +551,39 @@ class DoubanRankPlus2(_PluginBase):
                                         }
                                     ],
                                 },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 3},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "min_vote_count",
+                                                "label": "系列前作最低票数",
+                                                "placeholder": "默认 20，0 表示不限",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12},
+                                    "content": [
+                                        {
+                                            "component": "VTextarea",
+                                            "props": {
+                                                "model": "title_aliases",
+                                                "label": "TMDB 标题别名",
+                                                "placeholder": "每行：RSS标题=TMDB标题，例如：说唱巅峰对决=中国说唱巅峰对决",
+                                            },
+                                        }
+                                    ],
+                                }
                             ],
                         },
                         {
@@ -740,6 +820,10 @@ class DoubanRankPlus2(_PluginBase):
                 "sleep_time": "3,10",
                 "is_seasons_all": True,
                 "is_only_movies": False,
+                "allow_unrated": True,
+                "use_series_rating": True,
+                "min_vote_count": "20",
+                "title_aliases": "",
                 "history_type": HistoryDataType.LATEST.value,
                 "is_exit_ip_rate_limit": False,
                 "migrate_from_url": "",
@@ -1237,6 +1321,10 @@ class DoubanRankPlus2(_PluginBase):
             "clear_unrecognized": self._clear_unrecognized,
             "is_seasons_all": self._is_seasons_all,
             "is_only_movies": self._is_only_movies,
+            "allow_unrated": self._allow_unrated,
+            "use_series_rating": self._use_series_rating,
+            "min_vote_count": str(self._min_vote_count),
+            "title_aliases": self._title_aliases_raw,
             "release_year": str(self._release_year),
             "sleep_time": f"{self._min_sleep_time},{self._max_sleep_time}",
             "history_type": self._history_type,
@@ -1253,6 +1341,548 @@ class DoubanRankPlus2(_PluginBase):
         __config = self.__get_config()
         logger.debug(f"更新配置 {__config}")
         self.update_config(__config)
+
+    @staticmethod
+    def __safe_int(value: Any, default: int = 0, minimum: int | None = None) -> int:
+        try:
+            result = int(str(value).strip())
+        except (TypeError, ValueError):
+            result = default
+        if minimum is not None:
+            result = max(minimum, result)
+        return result
+
+    @staticmethod
+    def __safe_float(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def __normalize_subscription_season(season: Any) -> int | None:
+        """统一电影/剧集季号，避免 None、空串和字符串数字造成键不一致。"""
+        if season in (None, "", 0, "0"):
+            return None
+        try:
+            return int(season)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def __build_subscription_key(
+        cls,
+        tmdbid: Any,
+        mtype: Any,
+        season: Any = None,
+    ) -> str | None:
+        """使用 TMDB ID、媒体类型和季号构造稳定的订阅抑制键。"""
+        if tmdbid in (None, "", 0, "0"):
+            return None
+        media_type = mtype.value if isinstance(mtype, MediaType) else str(mtype or "")
+        normalized_season = cls.__normalize_subscription_season(season)
+        return f"tmdb:{tmdbid}|type:{media_type}|season:{normalized_season or 0}"
+
+    @staticmethod
+    def __normalize_subscription_records(data: Any) -> Dict[str, Dict[str, Any]]:
+        """兼容并清理持久化记录，只保留具有稳定 key 的字典项。"""
+        if isinstance(data, dict):
+            return {
+                str(key): value
+                for key, value in data.items()
+                if key and isinstance(value, dict)
+            }
+        if isinstance(data, list):
+            return {
+                str(item.get("key")): item
+                for item in data
+                if isinstance(item, dict) and item.get("key")
+            }
+        return {}
+
+    def __get_managed_subscriptions(self) -> Dict[str, Dict[str, Any]]:
+        return self.__normalize_subscription_records(
+            self.get_data(self._managed_subscriptions_data_key)
+        )
+
+    def __get_cancelled_subscriptions(self) -> Dict[str, Dict[str, Any]]:
+        return self.__normalize_subscription_records(
+            self.get_data(self._cancelled_subscriptions_data_key)
+        )
+
+    def __record_managed_subscription(
+        self,
+        subscribe_id: Any,
+        mediainfo: MediaInfo,
+        season: Any,
+    ) -> None:
+        """记录本插件实际创建的订阅，供删除事件进行来源校验。"""
+        key = self.__build_subscription_key(
+            mediainfo.tmdb_id, mediainfo.type, season
+        )
+        if not key:
+            logger.warn(f"{mediainfo.title_year} 缺少 TMDB ID，无法监控手动取消")
+            return
+        records = self.__get_managed_subscriptions()
+        records[key] = {
+            "key": key,
+            "subscribe_id": subscribe_id,
+            "title": mediainfo.title,
+            "year": mediainfo.year,
+            "type": mediainfo.type.value,
+            "tmdbid": mediainfo.tmdb_id,
+            "season": self.__normalize_subscription_season(season),
+            "created_at": datetime.datetime.now(
+                tz=pytz.timezone(settings.TZ)
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self.save_data(self._managed_subscriptions_data_key, records)
+
+    def __is_subscription_cancelled(
+        self, mediainfo: MediaInfo, season: Any
+    ) -> bool:
+        key = self.__build_subscription_key(
+            mediainfo.tmdb_id, mediainfo.type, season
+        )
+        return bool(key and key in self.__get_cancelled_subscriptions())
+
+    @eventmanager.register(EventType.SubscribeDeleted)
+    def subscribe_deleted(self, event: ManagerEvent) -> None:
+        """
+        监听 MoviePilot 的订阅删除事件。
+
+        仅当被删除订阅确实由本插件创建时才写入抑制列表；用户自己创建或其他
+        插件创建的订阅不会受影响。完成订阅由主程序自动迁入历史时不会触发该事件。
+        """
+        event_data = event.event_data if event else None
+        if not isinstance(event_data, dict):
+            return
+        subscribe_info = event_data.get("subscribe_info")
+        if not isinstance(subscribe_info, dict):
+            return
+
+        subscribe_id = event_data.get("subscribe_id") or subscribe_info.get("id")
+        key = self.__build_subscription_key(
+            subscribe_info.get("tmdbid"),
+            subscribe_info.get("type"),
+            subscribe_info.get("season"),
+        )
+        if not key:
+            return
+
+        managed = self.__get_managed_subscriptions()
+        managed_record = managed.get(key)
+        is_plugin_owned = subscribe_info.get("username") == self.plugin_name
+        is_recorded = bool(
+            managed_record
+            and (
+                subscribe_id in (None, "")
+                or str(managed_record.get("subscribe_id")) == str(subscribe_id)
+            )
+        )
+        if not (is_plugin_owned or is_recorded):
+            return
+
+        cancelled = self.__get_cancelled_subscriptions()
+        cancelled[key] = {
+            **(managed_record or {}),
+            "key": key,
+            "subscribe_id": subscribe_id,
+            "title": subscribe_info.get("name")
+            or (managed_record or {}).get("title")
+            or "未知影视",
+            "year": subscribe_info.get("year")
+            or (managed_record or {}).get("year"),
+            "type": subscribe_info.get("type"),
+            "tmdbid": subscribe_info.get("tmdbid"),
+            "season": self.__normalize_subscription_season(
+                subscribe_info.get("season")
+            ),
+            "cancelled_at": datetime.datetime.now(
+                tz=pytz.timezone(settings.TZ)
+            ).strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        self.save_data(self._cancelled_subscriptions_data_key, cancelled)
+        if key in managed:
+            managed.pop(key, None)
+            self.save_data(self._managed_subscriptions_data_key, managed)
+        logger.info(
+            f"检测到手动取消本插件订阅：{cancelled[key]['title']}"
+            f"{' 第' + str(cancelled[key]['season']) + '季' if cancelled[key]['season'] else ''}，"
+            "已加入不再自动订阅列表"
+        )
+
+    @staticmethod
+    def __chinese_number_to_int(value: str) -> int | None:
+        """解析常见中文季号，支持一至九十九及阿拉伯数字。"""
+        value = str(value or "").strip()
+        if not value:
+            return None
+        if value.isdigit():
+            return int(value)
+        digits = {
+            "零": 0,
+            "〇": 0,
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+        }
+        if value == "十":
+            return 10
+        if "十" in value:
+            left, right = value.split("十", 1)
+            tens = digits.get(left, 1) if left else 1
+            ones = digits.get(right, 0) if right else 0
+            return tens * 10 + ones
+        if all(char in digits for char in value):
+            result = 0
+            for char in value:
+                result = result * 10 + digits[char]
+            return result
+        return None
+
+    @classmethod
+    def __parse_season_title(
+        cls, title: str, year: str | None = None
+    ) -> Tuple[str, int | None]:
+        """将“节目名 第十季”拆成 TMDB 系列基础名与季号。"""
+        original = str(title or "").strip()
+        season = None
+        patterns = [
+            r"第\s*([零〇一二两三四五六七八九十\d]+)\s*季",
+            r"\bSeason\s*(\d+)\b",
+            r"\bS(\d{1,2})\b",
+        ]
+        base_title = original
+        for pattern in patterns:
+            match = re.search(pattern, base_title, flags=re.IGNORECASE)
+            if not match:
+                continue
+            season = cls.__chinese_number_to_int(match.group(1))
+            base_title = re.sub(
+                pattern, " ", base_title, flags=re.IGNORECASE
+            ).strip()
+            break
+        base_title = re.sub(r"\s+", " ", base_title).strip(" -–—·:：")
+        if year:
+            base_title = re.sub(
+                rf"[\s·_\-–—]*{re.escape(str(year))}$", "", base_title
+            ).strip(" -–—·:：")
+        return base_title or original, season
+
+    @staticmethod
+    def __parse_title_aliases(raw_value: str) -> Dict[str, str]:
+        aliases: Dict[str, str] = {}
+        for line in str(raw_value or "").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = re.split(r"\s*[=＝]\s*", line, maxsplit=1)
+            if len(parts) != 2 or not parts[0] or not parts[1]:
+                logger.warn(f"忽略格式错误的标题别名：{line}")
+                continue
+            aliases[parts[0].strip()] = parts[1].strip()
+        return aliases
+
+    def __get_alias_title(self, title: str) -> str | None:
+        normalized = str(title or "").strip()
+        if not normalized:
+            return None
+        if normalized in self._title_aliases:
+            return self._title_aliases[normalized]
+        compact = re.sub(r"\s+", "", normalized).lower()
+        for source, target in self._title_aliases.items():
+            if re.sub(r"\s+", "", source).lower() == compact:
+                return target
+        return None
+
+    @staticmethod
+    def __is_retryable_status(status: str | None) -> bool:
+        return status in {
+            Status.UNRECOGNIZED.value,
+            Status.RATING_PENDING.value,
+            Status.RETRY_LATER.value,
+        }
+
+    @staticmethod
+    def __is_legacy_zero_vote_history(item: dict[str, Any] | None) -> bool:
+        """兼容旧版：曾被作为“评分不符合”写入历史的 0 分条目需要重新评估。"""
+        if not item or item.get("status") != Status.RATING_NOT_MATCH.value:
+            return False
+        try:
+            return float(item.get("vote") or 0) <= 0
+        except (TypeError, ValueError):
+            return False
+
+    def __remove_retryable_history(
+        self, history: List[dict[str, Any]], unique_flag: str
+    ) -> None:
+        history[:] = [
+            item
+            for item in history
+            if not (
+                item
+                and item.get("unique") == unique_flag
+                and (
+                    self.__is_retryable_status(item.get("status"))
+                    or self.__is_legacy_zero_vote_history(item)
+                )
+            )
+        ]
+
+    def __recognize_rss_media(
+        self,
+        title: str,
+        year: str | None,
+        douban_id: str | None,
+        mtype: MediaType | None,
+        force_tv: bool = False,
+    ) -> Tuple[MediaInfo | None, bool]:
+        """
+        增强识别：豆瓣ID优先；失败后使用系列基础名、季号、别名文本识别。
+        返回 (媒体信息, 是否建议稍后重试)。
+        """
+        base_title, season = self.__parse_season_title(title, year)
+        if force_tv or season:
+            mtype = MediaType.TV
+
+        if douban_id:
+            try:
+                tmdbinfo, is_rate_limit = self.__get_tmdbinfo_by_doubanid(
+                    doubanid=douban_id, mtype=mtype
+                )
+                if tmdbinfo:
+                    tmdb_type = tmdbinfo.get("media_type") or mtype
+                    if not isinstance(tmdb_type, MediaType):
+                        type_text = str(tmdb_type or "").strip().lower()
+                        if type_text in {"tv", "电视剧", "剧集"}:
+                            tmdb_type = MediaType.TV
+                        elif type_text in {"movie", "电影"}:
+                            tmdb_type = MediaType.MOVIE
+                        else:
+                            tmdb_type = mtype
+                    mediainfo = self.chain.recognize_media(
+                        tmdbid=tmdbinfo.get("id"),
+                        mtype=tmdb_type,
+                        cache=False,
+                    )
+                    if mediainfo:
+                        logger.info(
+                            f"通过豆瓣ID {douban_id} 匹配到TMDB："
+                            f"{mediainfo.title_year} ({mediainfo.tmdb_id})"
+                        )
+                        return mediainfo, False
+                if is_rate_limit:
+                    logger.warn(f"豆瓣ID {douban_id} 查询触发速率限制，改用文本识别")
+            except Exception as err:
+                logger.warn(f"豆瓣ID {douban_id} 匹配TMDB失败，改用文本识别：{err}")
+
+        candidates = []
+        for candidate in [
+            base_title,
+            self.__get_alias_title(base_title),
+            self.__get_alias_title(title),
+            title,
+        ]:
+            candidate = str(candidate or "").strip()
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+        # 电视剧/综艺的 RSS 年份通常是当前季年份，而 TMDB 搜索使用系列首播年份。
+        # 因此先带年份精确匹配，再自动去掉年份重试，兼顾准确率和综艺识别率。
+        search_years = [year]
+        if mtype == MediaType.TV and year:
+            search_years.append(None)
+
+        for candidate in candidates:
+            for search_year in search_years:
+                meta = MetaInfo(candidate)
+                meta.year = search_year
+                if mtype:
+                    meta.type = mtype
+                if season:
+                    meta.type = MediaType.TV
+                    meta.begin_season = season
+                logger.info(
+                    f"TMDB文本识别：Title={candidate}, Year={search_year}, "
+                    f"Type={meta.type}, Season={season}"
+                )
+                try:
+                    mediainfo = self.chain.recognize_media(meta=meta, cache=False)
+                except Exception as err:
+                    logger.error(f"TMDB文本识别请求失败：{candidate}，{err}")
+                    return None, True
+                if mediainfo:
+                    return mediainfo, False
+        return None, False
+
+    def __tmdb_get(
+        self, endpoint: str, params: Dict[str, Any] | None = None
+    ) -> Tuple[dict[str, Any] | None, bool]:
+        """调用 TMDB 官方接口；第二个返回值表示请求是否成功。"""
+        api_key = getattr(settings, "TMDB_API_KEY", None)
+        api_domain = getattr(settings, "TMDB_API_DOMAIN", "api.themoviedb.org")
+        if not api_key:
+            logger.error("未配置 TMDB_API_KEY，无法查询电影合集")
+            return None, False
+        url = f"https://{api_domain}/3/{endpoint.lstrip('/')}"
+        query = {"api_key": api_key, "language": "zh-CN"}
+        query.update(params or {})
+        try:
+            response = requests.get(
+                url,
+                params=query,
+                timeout=30,
+                proxies=settings.PROXY or {},
+            )
+            if response.status_code != 200:
+                logger.error(
+                    f"TMDB请求失败：{endpoint}，状态码={response.status_code}"
+                )
+                return None, False
+            data = response.json()
+            return data if isinstance(data, dict) else None, True
+        except requests.RequestException as err:
+            logger.error(f"TMDB请求异常：{endpoint}，{err}")
+            return None, False
+        except ValueError as err:
+            logger.error(f"TMDB响应解析失败：{endpoint}，{err}")
+            return None, False
+
+    def __get_movie_series_vote(
+        self, mediainfo: MediaInfo
+    ) -> Tuple[float | None, int, bool]:
+        """返回电影有效前作的平均分、数量、查询是否成功。"""
+        details, success = self.__tmdb_get(f"movie/{mediainfo.tmdb_id}")
+        if not success or not details:
+            return None, 0, False
+        collection = details.get("belongs_to_collection")
+        if not collection or not collection.get("id"):
+            return None, 0, True
+        collection_info, success = self.__tmdb_get(
+            f"collection/{collection.get('id')}"
+        )
+        if not success or not collection_info:
+            return None, 0, False
+
+        current_date = details.get("release_date")
+        if not current_date and mediainfo.year:
+            current_date = f"{mediainfo.year}-12-31"
+        votes = []
+        for part in collection_info.get("parts") or []:
+            if part.get("id") == mediainfo.tmdb_id:
+                continue
+            release_date = part.get("release_date")
+            if not release_date or (current_date and release_date >= current_date):
+                continue
+            vote = self.__safe_float(part.get("vote_average"))
+            vote_count = self.__safe_int(part.get("vote_count"), minimum=0)
+            if vote <= 0 or vote_count < self._min_vote_count:
+                continue
+            votes.append(vote)
+        if not votes:
+            return None, 0, True
+        return sum(votes) / len(votes), len(votes), True
+
+    def __get_tv_season_vote(
+        self, tmdb_id: int, season: int
+    ) -> Tuple[float | None, bool]:
+        """优先读取季评分，缺失时按各集票数加权计算。"""
+        try:
+            season_info = self.chain.tmdb_info(
+                tmdbid=tmdb_id, mtype=MediaType.TV, season=season
+            )
+        except Exception as err:
+            logger.error(f"查询TMDB季详情失败：TMDB={tmdb_id}, S{season:02d}，{err}")
+            return None, False
+        if season_info is None:
+            return None, False
+        if not season_info:
+            return None, True
+        season_vote = self.__safe_float(season_info.get("vote_average"))
+        if season_vote > 0:
+            return season_vote, True
+
+        weighted_sum = 0.0
+        total_count = 0
+        for episode in season_info.get("episodes") or []:
+            vote = self.__safe_float(episode.get("vote_average"))
+            vote_count = self.__safe_int(episode.get("vote_count"), minimum=0)
+            if vote <= 0 or vote_count < self._min_vote_count:
+                continue
+            weighted_sum += vote * vote_count
+            total_count += vote_count
+        if total_count <= 0:
+            return None, True
+        return weighted_sum / total_count, True
+
+    def __check_unrated_policy(
+        self, mediainfo: MediaInfo, season: int | None
+    ) -> Status | None:
+        """评分为0时，按电影前作或电视剧往季的平均评分决定。"""
+        if not self._allow_unrated:
+            logger.info(f"{mediainfo.title_year} 暂无评分，配置为不允许未出分影视")
+            return Status.RATING_PENDING
+        if not self._use_series_rating:
+            logger.info(f"{mediainfo.title_year} 暂无评分，未启用系列评分，直接放行")
+            return None
+
+        if mediainfo.type == MediaType.MOVIE:
+            average, count, success = self.__get_movie_series_vote(mediainfo)
+            if not success:
+                logger.warn(f"{mediainfo.title_year} 前作评分查询失败，等待重试")
+                return Status.RETRY_LATER
+            if count == 0 or average is None:
+                logger.info(f"{mediainfo.title_year} 没有有效前作评分，按新系列电影放行")
+                return None
+            logger.info(
+                f"{mediainfo.title_year} 当前未出分，{count} 部有效前作平均分 "
+                f"{average:.2f}，最低要求 {self._vote}"
+            )
+            return None if average >= self._vote else Status.RATING_PENDING
+
+        current_season = season or 1
+        current_vote, success = self.__get_tv_season_vote(
+            mediainfo.tmdb_id, current_season
+        )
+        if not success:
+            return Status.RETRY_LATER
+        if current_vote is not None and current_vote > 0:
+            logger.info(
+                f"{mediainfo.title_year} 第{current_season}季评分 "
+                f"{current_vote:.2f}，最低要求 {self._vote}"
+            )
+            return None if current_vote >= self._vote else Status.RATING_PENDING
+        if current_season <= 1:
+            logger.info(f"{mediainfo.title_year} 为第一季且暂无评分，直接放行")
+            return None
+
+        previous_votes = []
+        for season_number in range(1, current_season):
+            vote, success = self.__get_tv_season_vote(
+                mediainfo.tmdb_id, season_number
+            )
+            if not success:
+                return Status.RETRY_LATER
+            if vote is not None and vote > 0:
+                previous_votes.append(vote)
+        if not previous_votes:
+            logger.info(f"{mediainfo.title_year} 没有有效往季评分，直接放行")
+            return None
+        average = sum(previous_votes) / len(previous_votes)
+        logger.info(
+            f"{mediainfo.title_year} 第{current_season}季暂无评分，"
+            f"{len(previous_votes)} 个有效往季平均分 {average:.2f}，"
+            f"最低要求 {self._vote}"
+        )
+        return None if average >= self._vote else Status.RATING_PENDING
 
     def __start_task(self):
         """
@@ -1283,7 +1913,24 @@ class DoubanRankPlus2(_PluginBase):
                         "is_seasons_all", self._is_seasons_all
                     )
                     self._is_only_movies = __original_config.get(
-                        "_is_only_movies", self._is_only_movies
+                        "is_only_movies", self._is_only_movies
+                    )
+                    self._allow_unrated = __original_config.get(
+                        "allow_unrated", self._allow_unrated
+                    )
+                    self._use_series_rating = __original_config.get(
+                        "use_series_rating", self._use_series_rating
+                    )
+                    self._min_vote_count = self.__safe_int(
+                        __original_config.get("min_vote_count", self._min_vote_count),
+                        default=self._min_vote_count,
+                        minimum=0,
+                    )
+                    self._title_aliases_raw = str(
+                        __original_config.get("title_aliases", self._title_aliases_raw) or ""
+                    )
+                    self._title_aliases = self.__parse_title_aliases(
+                        self._title_aliases_raw
                     )
 
                     self._release_year = __original_config.get(
@@ -1356,12 +2003,15 @@ class DoubanRankPlus2(_PluginBase):
                     f"已清理 {deleted_count} 条 {self.plugin_name} 未识别的历史记录"
                 )
 
-        # 提取 history 中的 unique 值到一个集合中
-        unique_flags = {h.get("unique") for h in history if h is not None}
-
-        # 初始化豆瓣IP限制判断
-        douban_last_ip_rate_limit_datetime = None
-        douban_ip_rate_limit_times = 0
+        # 只将终态加入去重集合；未识别、待评分、接口失败，以及旧版误判为
+        # “评分不符合”的 0 分条目，会在后续任务中重新评估。
+        unique_flags = {
+            h.get("unique")
+            for h in history
+            if h is not None
+            and not self.__is_retryable_status(h.get("status"))
+            and not self.__is_legacy_zero_vote_history(h)
+        }
 
         # count_addr_list = 0
         for addr_index, _addr in enumerate(addr_list):
@@ -1412,10 +2062,16 @@ class DoubanRankPlus2(_PluginBase):
                     douban_id = rss_info.get("doubanid")
                     year = rss_info.get("year")
                     type_str = rss_info.get("mtype")
+                    force_tv = bool(
+                        subscription_type == "tv"
+                        or "show_domestic" in str(addr or "")
+                    )
 
                     if type_str == "movie":
                         mtype = MediaType.MOVIE
                     elif type_str:
+                        mtype = MediaType.TV
+                    if force_tv:
                         mtype = MediaType.TV
                     unique_flag = f"{self.plugin_config_prefix}{title}_{year}_(DB:{douban_id})"
                     logger.debug(f"unique_flag:::{unique_flag}")
@@ -1430,31 +2086,36 @@ class DoubanRankPlus2(_PluginBase):
                     logger.info(
                         f"开始处理: Title: {title}, Year:{year}, DBID:{douban_id}, Type:{mtype}"
                     )
-                    # 元数据
-                    meta = MetaInfo(title)
+                    base_title, parsed_season = self.__parse_season_title(title, year)
+                    meta = MetaInfo(base_title)
                     meta.year = year
                     if mtype:
                         meta.type = mtype
-                    logger.debug(f"MetaInfo meta from rss_info title:::{meta}")
+                    if parsed_season:
+                        meta.type = MediaType.TV
+                        meta.begin_season = parsed_season
+                    logger.debug(f"增强识别 MetaInfo:::{meta}")
 
-                    # === 修改后：彻底放弃请求豆瓣 API，直接利用 RSS 现有的 Title 和 Year 进行 TMDB 文本识别 ===
-                    logger.info(f"绕过豆瓣 API，直接通过文本识别: Title: {title}, Year: {year}")
-                    
-                    mediainfo = self.chain.recognize_media(meta=meta)
+                    mediainfo, should_retry = self.__recognize_rss_media(
+                        title=title,
+                        year=year,
+                        douban_id=douban_id,
+                        mtype=mtype,
+                        force_tv=force_tv,
+                    )
 
                     if not mediainfo:
                         logger.warn(f"未识别到 {title} 的媒体信息")
-                        # 存储未识别历史记录
                         history_payload = DoubanRankPlus2.__get_history_unrecognized_payload(
                             title, unique_flag, year, douban_id
                         )
+                        if should_retry:
+                            history_payload["status"] = Status.RETRY_LATER.value
+                        self.__remove_retryable_history(history, unique_flag)
                         history.append(history_payload)
-                        unique_flags.add(unique_flag)
-                        logger.debug(f"已添加到未识别历史：{history_payload}")
+                        logger.debug(f"已添加到可重试历史：{history_payload}")
                         continue
-                    # === 修改结束 ===
 
-                    # logger.debug(f"{mediainfo}:::{mediainfo}")
                     logger.debug(f"{meta}:::{meta}")
                     logger.info(
                         f"已识别到 {title} ({year}) 的媒体信息: {mediainfo.title_year}, 类型: {mediainfo.type}"
@@ -1507,10 +2168,12 @@ class DoubanRankPlus2(_PluginBase):
                         f"is_exist_all:::{is_exist_all}, missing_season:::{missing_season}"
                     )
 
-                    # 如果是剧集且开启全季订阅，则轮流下载每一季
+                    # 如果 RSS 未明确季号且开启全季订阅，则轮流处理每一季。
+                    # 标题已包含“第N季”时只处理目标季，避免为新一季误订全部旧季。
                     if (
                         self._is_seasons_all
                         and mediainfo.type == MediaType.TV
+                        and not meta.begin_season
                         and number_of_seasons
                         and not is_exist_all
                     ):
@@ -1556,6 +2219,9 @@ class DoubanRankPlus2(_PluginBase):
                             missing_season=missing_season,
                         )
 
+                    # 覆盖同一条目的旧可重试记录，避免历史面板不断累积。
+                    self.__remove_retryable_history(history, unique_flag)
+
                     # 存储历史记录
                     history_payload = {
                         "title": title,
@@ -1576,7 +2242,10 @@ class DoubanRankPlus2(_PluginBase):
                         "status": status.value,
                     }
                     history.append(history_payload)
-                    unique_flags.add(unique_flag)
+                    if self.__is_retryable_status(status.value):
+                        unique_flags.discard(unique_flag)
+                    else:
+                        unique_flags.add(unique_flag)
                     logger.debug(f"已添加到历史：{history_payload}")
 
             except Exception as e:
@@ -1661,20 +2330,44 @@ class DoubanRankPlus2(_PluginBase):
                 f"{mediainfo.title_year} 的自定义保存路径为: {save_path}"
             )
 
-        # 判断上映年份是否符合要求
-        if self._release_year and int(mediainfo.year) < int(
-            self._release_year
-        ):
+        # 判断上映年份是否符合要求；年份缺失时不误杀，交给识别结果和后续订阅处理。
+        year_for_filter = (
+            meta.year
+            if mediainfo.type == MediaType.TV and season and meta.year
+            else mediainfo.year
+        )
+        media_year = self.__safe_int(year_for_filter, default=0, minimum=0)
+        if self._release_year and media_year and media_year < self._release_year:
             logger.info(
-                f"{mediainfo.title_year} 上映年份: {mediainfo.year}, 不符合要求"
+                f"{mediainfo.title_year} 用于筛选的年份: {year_for_filter}, 不符合要求"
             )
             return Status.YEAR_NOT_MATCH
-        # 判断评分是否符合要求
-        if self._vote and mediainfo.vote_average < self._vote:
-            logger.info(
-                f"{mediainfo.title_year} 评分: {mediainfo.vote_average}, 不符合要求"
-            )
-            return Status.RATING_NOT_MATCH
+
+        # 电影使用作品评分；剧集有明确季号时必须使用当前季评分，不能用整部系列总评分代替。
+        if self._vote:
+            if mediainfo.type == MediaType.TV and season:
+                vote_average, query_success = self.__get_tv_season_vote(
+                    mediainfo.tmdb_id, season
+                )
+                if not query_success:
+                    return Status.RETRY_LATER
+                vote_average = vote_average or 0.0
+            else:
+                vote_average = self.__safe_float(mediainfo.vote_average)
+
+            if vote_average > 0 and vote_average < self._vote:
+                logger.info(
+                    f"{mediainfo.title_year}"
+                    f"{' 第' + str(season) + '季' if season else ''}"
+                    f"评分: {vote_average:.2f}, 不符合要求"
+                )
+                return Status.RATING_NOT_MATCH
+            if vote_average <= 0:
+                unrated_status = self.__check_unrated_policy(
+                    mediainfo=mediainfo, season=season
+                )
+                if unrated_status:
+                    return unrated_status
 
         # 查询缺失的媒体信息
         # exist_flag, _exist_details = self.downloadchain.get_no_exists_info(
@@ -1685,13 +2378,21 @@ class DoubanRankPlus2(_PluginBase):
         #     logger.info(f"{mediainfo.title_year} 媒体库中已存在")
         #     return Status.MEDIA_EXISTS
 
+        # 用户曾手动取消本插件创建的同一订阅时，永久跳过自动重订。
+        if self.__is_subscription_cancelled(mediainfo, season):
+            logger.info(
+                f"{mediainfo.title_year}"
+                f"{' 第' + str(season) + '季' if season else ''} 已手动取消过，跳过自动订阅"
+            )
+            return Status.SUBSCRIPTION_CANCELLED
+
         # 判断用户是否已经添加订阅
         if self.subscribechain.exists(mediainfo=mediainfo, meta=meta):
             logger.info(f"{mediainfo.title_year} 订阅已存在")
             return Status.SUBSCRIPTION_EXISTS
 
-        # 添加订阅
-        self.subscribechain.add(
+        # 添加订阅。MoviePilot V2 返回 (订阅ID, 消息)；兼容旧版无返回值。
+        add_result = self.subscribechain.add(
             title=mediainfo.title,
             year=mediainfo.year,
             mtype=mediainfo.type,
@@ -1700,6 +2401,26 @@ class DoubanRankPlus2(_PluginBase):
             exist_ok=True,
             username=self.plugin_name,
             save_path=save_path,
+        )
+        subscribe_id = None
+        add_message = ""
+        if isinstance(add_result, tuple):
+            subscribe_id = add_result[0] if len(add_result) > 0 else None
+            add_message = str(add_result[1] or "") if len(add_result) > 1 else ""
+        elif isinstance(add_result, int):
+            subscribe_id = add_result
+
+        if isinstance(add_result, tuple) and not subscribe_id:
+            logger.error(
+                f"添加订阅失败: {mediainfo.title_year}"
+                f"{' 第' + str(season) + '季' if season else ''} {add_message}"
+            )
+            return Status.RETRY_LATER
+
+        self.__record_managed_subscription(
+            subscribe_id=subscribe_id,
+            mediainfo=mediainfo,
+            season=season,
         )
         if season:
             logger.info(f"已添加订阅: {mediainfo.title_year} 第 {season} 季")
