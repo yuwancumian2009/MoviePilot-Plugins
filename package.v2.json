@@ -58,13 +58,14 @@
     "name": "豆瓣榜单Plus（自用）",
     "description": "豆瓣热门榜单Plus魔改版，去除豆瓣API比对",
     "labels": "系统",
-    "version": "1.0.0",
+    "version": "1.2.0",
     "icon": "",
     "author": "yuwancumian",
     "level": 1,
     "release": false,
     "history": {
-      "v1.0.0": "豆瓣热门榜单Plus魔改版，去除豆瓣API比对"
+      "v1.0.0": "豆瓣热门榜单Plus魔改版，去除豆瓣API比对",
+      "v1.2.0": "监控手动取消的订阅不再自动添加"
     }
   }
 }
