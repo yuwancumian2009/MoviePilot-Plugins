@@ -1,0 +1,268 @@
+
+.mr-config[data-v-3095b875] {
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  min-height: 400px;
+  border: 1px solid rgba(var(--v-theme-on-surface), 0.12);
+  border-radius: 8px;
+}
+.mr-topbar[data-v-3095b875] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 8px;
+}
+.mr-topbar__left[data-v-3095b875] {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.mr-topbar__right[data-v-3095b875] {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.mr-topbar__icon[data-v-3095b875] {
+  width: 42px;
+  height: 42px;
+  border-radius: 11px;
+  background: rgba(var(--v-theme-primary), 0.12);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  color: rgb(var(--v-theme-primary));
+  flex-shrink: 0;
+}
+.mr-topbar__title[data-v-3095b875] {
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.mr-topbar__sub[data-v-3095b875] {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.55);
+  margin-top: 2px;
+}
+.mr-card[data-v-3095b875] {
+  background: rgba(var(--v-theme-on-surface), 0.03);
+  backdrop-filter: blur(20px) saturate(150%);
+  border-radius: 14px;
+  border: 0.5px solid rgba(var(--v-theme-on-surface), 0.08);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.mr-card__header[data-v-3095b875] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.mr-card__title[data-v-3095b875] {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+}
+.mr-desc-content[data-v-3095b875] {
+  font-size: 13px;
+  line-height: 1.6;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mr-desc-list[data-v-3095b875] {
+  padding-left: 20px;
+  margin-top: 2px;
+}
+.mr-desc-list li[data-v-3095b875] {
+  margin-bottom: 4px;
+}
+.mr-row__text[data-v-3095b875] {
+  font-size: 14px;
+  color: rgba(var(--v-theme-on-surface), 0.85);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mr-divider[data-v-3095b875] {
+  height: 0.5px;
+  background: rgba(var(--v-theme-on-surface), 0.08);
+  margin: 0 -4px;
+}
+.mr-field[data-v-3095b875] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mr-field__header[data-v-3095b875] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mr-field__title-block[data-v-3095b875] {
+  min-height: 36px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: flex-start;
+  gap: 2px;
+}
+.mr-field__title-main[data-v-3095b875] {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.mr-field__title-icon[data-v-3095b875] {
+  flex-shrink: 0;
+}
+.mr-field__title-text[data-v-3095b875] {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+}
+.mr-field__label[data-v-3095b875] {
+  font-size: 13px;
+  color: rgba(var(--v-theme-on-surface), 0.7);
+}
+.mr-field__hint[data-v-3095b875] {
+  font-size: 11px;
+  color: rgba(var(--v-theme-on-surface), 0.45);
+}
+.mr-field__hint--compact[data-v-3095b875] {
+  line-height: 1.2;
+  text-align: left;
+}
+.mr-table-wrap[data-v-3095b875] {
+  border: 0.5px solid rgba(var(--v-theme-on-surface), 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  background: rgba(var(--v-theme-on-surface), 0.02);
+}
+.mr-table-wrap[data-v-3095b875] th,
+.mr-table-wrap[data-v-3095b875] td {
+  vertical-align: middle;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+.mr-table-wrap[data-v-3095b875] td {
+  height: 40px;
+}
+.mr-table-wrap[data-v-3095b875] th:nth-child(2),
+.mr-table-wrap[data-v-3095b875] th:nth-child(3),
+.mr-table-wrap[data-v-3095b875] th:nth-child(4),
+.mr-table-wrap[data-v-3095b875] td:nth-child(2),
+.mr-table-wrap[data-v-3095b875] td:nth-child(3),
+.mr-table-wrap[data-v-3095b875] td:nth-child(4) {
+  text-align: center !important;
+}
+.mr-col-center[data-v-3095b875] {
+  text-align: center;
+}
+.mr-cell-inline[data-v-3095b875] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+}
+.mr-empty-state[data-v-3095b875] {
+  font-size: 13px;
+  line-height: 1.7;
+  color: rgba(var(--v-theme-on-surface), 0.65);
+  background: rgba(var(--v-theme-info), 0.08);
+  border: 1px dashed rgba(var(--v-theme-info), 0.22);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+}
+.mr-alert-rules[data-v-3095b875] {
+  background: rgba(59, 130, 246, 0.12);
+  border: 0.5px solid rgba(59, 130, 246, 0.3);
+  border-radius: 14px;
+  padding: 16px 14px;
+  line-height: 1.6;
+  color: #3b82f6;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 2px 12px rgba(var(--v-theme-on-surface), 0.1);
+  backdrop-filter: blur(20px) saturate(150%);
+}
+.switch[data-v-3095b875] {
+  --switch-width: 36px;
+  --switch-height: 20px;
+  --switch-bg: rgba(var(--v-theme-on-surface), 0.22);
+  --switch-checked-bg: rgb(var(--v-theme-primary));
+  --switch-offset: calc((var(--switch-height) - var(--circle-diameter)) / 2);
+  --switch-transition: all .2s cubic-bezier(0.27, 0.2, 0.25, 1.51);
+  --circle-diameter: 16px;
+  --circle-bg: #fff;
+  --circle-shadow: 1px 1px 2px rgba(0, 0, 0, 0.2);
+  --circle-checked-shadow: -1px 1px 2px rgba(0, 0, 0, 0.2);
+  --circle-transition: var(--switch-transition);
+  --icon-transition: all .2s cubic-bezier(0.27, 0.2, 0.25, 1.51);
+  --icon-cross-color: rgba(0, 0, 0, 0.4);
+  --icon-cross-size: 6px;
+  --icon-checkmark-color: var(--switch-checked-bg);
+  --icon-checkmark-size: 10px;
+  --effect-width: calc(var(--circle-diameter) / 2);
+  --effect-height: calc(var(--effect-width) / 2 - 1px);
+  --effect-bg: var(--circle-bg);
+  --effect-border-radius: 1px;
+  --effect-transition: all .2s ease-in-out;
+  display: inline-block;
+  margin-left: 10px;
+  user-select: none;
+}
+.switch input[data-v-3095b875] { display: none;
+}
+.switch svg[data-v-3095b875] { transition: var(--icon-transition); position: absolute; height: auto;
+}
+.switch .checkmark[data-v-3095b875] { width: var(--icon-checkmark-size); color: var(--icon-checkmark-color); transform: scale(0);
+}
+.switch .cross[data-v-3095b875] { width: var(--icon-cross-size); color: var(--icon-cross-color);
+}
+.slider[data-v-3095b875] { box-sizing: border-box; width: var(--switch-width); height: var(--switch-height); background: var(--switch-bg); border-radius: 999px; display: flex; align-items: center; position: relative; transition: var(--switch-transition); cursor: pointer;
+}
+.circle[data-v-3095b875] { width: var(--circle-diameter); height: var(--circle-diameter); background: var(--circle-bg); border-radius: inherit; box-shadow: var(--circle-shadow); display: flex; align-items: center; justify-content: center; transition: var(--circle-transition); z-index: 1; position: absolute; left: var(--switch-offset);
+}
+.slider[data-v-3095b875]::before { content: ""; position: absolute; width: var(--effect-width); height: var(--effect-height); left: calc(var(--switch-offset) + (var(--effect-width) / 2)); background: var(--effect-bg); border-radius: var(--effect-border-radius); transition: var(--effect-transition);
+}
+.switch input:checked+.slider[data-v-3095b875] { background: var(--switch-checked-bg);
+}
+.switch input:checked+.slider .checkmark[data-v-3095b875] { transform: scale(1);
+}
+.switch input:checked+.slider .cross[data-v-3095b875] { transform: scale(0);
+}
+.switch input:checked+.slider[data-v-3095b875]::before { left: calc(100% - var(--effect-width) - (var(--effect-width) / 2) - var(--switch-offset));
+}
+.switch input:checked+.slider .circle[data-v-3095b875] { left: calc(100% - var(--circle-diameter) - var(--switch-offset)); box-shadow: var(--circle-checked-shadow);
+}
+.switch input:disabled+.slider[data-v-3095b875] { opacity: 0.5; cursor: not-allowed;
+}
+@media (max-width: 600px) {
+.mr-field__header[data-v-3095b875] {
+    flex-wrap: wrap;
+}
+}
+
+/* 针对该插件独属的下拉菜单进行越权排版修复 */
+.mr-select-menu {
+  /* 魔法机制：利用 CSS 的优先度让 max-width=0 被原内联写入的 min-width 覆盖，使得宽度精准定死为 min-width（即输入框宽度） */
+  max-width: 0 !important;
+  margin-top: 4px;
+}
+
+/* 覆盖深色模式下过于生硬刺眼的纯黑底色，采用深蓝灰调 */
+
+/* Vuetify 3 中正确的选项文本容器是 .v-list-item-title */
+/* 配合外层 maxWidth 为实际宽度的限制，对其做单行裁切省略 */
