@@ -1,0 +1,15 @@
+{
+  "MessageRouter": {
+    "name": "Vue-插件消息重定向",
+    "description": "可深度接管 MoviePilot 底层的通知中心与事件枢纽。",
+    "labels": "系统",
+    "version": "3.0.0",
+    "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/messagerouter.png",
+    "author": "yuwancumian,KoWming",
+    "level": 1,
+    "release": true,
+    "history": {
+      "v3.0.0": "MoviePilot V3 专用分支：构建工具链对齐宿主（Vite 5 / vite-plugin-federation 1.4.1 / vue 3.5.13 / vuetify 3.7.3），dist 联邦产物随仓库分发，修复 V3 下前端「组件加载错误」。"
+    }
+  }
+}
