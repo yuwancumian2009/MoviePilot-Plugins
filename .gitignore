@@ -10,7 +10,7 @@ __pycache__/
 .Python
 build/
 develop-eggs/
-dist/
+# dist/ 不再忽略：MoviePilot V3 联邦插件的 dist 是运行必需产物，必须随仓库入库
 downloads/
 eggs/
 .eggs/
@@ -161,3 +161,9 @@ cython_debug/
 
 .idea/
 .vscode/
+
+# 前端依赖与本地打包产物（dist 必须保留，见上）
+node_modules/
+*.zip
+*.tar.gz
+*.sha256
