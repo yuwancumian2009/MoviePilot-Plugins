@@ -12,9 +12,10 @@ on:
         options:
           - plugins
           - plugins.v2
-        default: 'plugins.v2'
+          - plugins.v3
+        default: 'plugins.v3'
       plugin_id:
-        description: '请输入 package.json 中的插件 ID (例如: AutoSignIn)'
+        description: '请输入 package.json 中的插件 ID (例如: MessageRouter)'
         required: true
         type: string
       prerelease:
@@ -86,33 +87,36 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      - name: Setup Node.js for plugins.v2 build
-        if: ${{ matrix.plugin.backend_worker_path == 'plugins.v2' }}
+      # plugins.v2 / plugins.v3 都是联邦前端插件代际；plugins（v1）没有前端构建
+      - name: Setup Node.js
+        if: ${{ startsWith(matrix.plugin.backend_worker_path, 'plugins.v') }}
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: ${{ matrix.plugin.backend_worker_path }}/${{ matrix.plugin.backend_path }}/package-lock.json
 
-      - name: Build frontend assets for plugins.v2
-        if: ${{ matrix.plugin.backend_worker_path == 'plugins.v2' }}
+      # 以 package.json 是否存在来判定是否为联邦前端插件，
+      # 这样同一代际里的纯 Python 插件也能安全跳过，不会误报构建失败。
+      - name: Build frontend assets
         run: |
+          set -euo pipefail
           FULL_SOURCE_PATH="${{ matrix.plugin.backend_worker_path }}/${{ matrix.plugin.backend_path }}"
 
-          if [ ! -f "$FULL_SOURCE_PATH/package.json" ]; then
-            echo "[Error] plugins.v2 插件缺少 package.json: $FULL_SOURCE_PATH/package.json"
+          if [ ! -d "$FULL_SOURCE_PATH" ]; then
+            echo "[Error] 未找到源目录: $FULL_SOURCE_PATH"
             exit 1
           fi
 
-          echo "[Info] 检测到 plugins.v2 插件，开始构建前端产物..."
-          cd "$FULL_SOURCE_PATH"
-
-          if [ -f "package-lock.json" ]; then
-            npm ci
-          else
-            npm install
+          if [ ! -f "$FULL_SOURCE_PATH/package.json" ]; then
+            echo "[Info] $FULL_SOURCE_PATH 无 package.json，按纯后端插件处理，跳过前端构建。"
+            exit 0
           fi
 
+          echo "[Info] 检测到联邦前端插件，开始构建前端产物..."
+          cd "$FULL_SOURCE_PATH"
+
+          if [ -f "package-lock.json" ]; then npm ci; else npm install; fi
           npm run build:web
 
           if [ ! -d "dist" ]; then
@@ -120,8 +124,45 @@ jobs:
             exit 1
           fi
 
+          # 联邦插件必须有 remoteEntry.js，否则宿主加载时会报「组件加载错误」
+          if [ ! -f "dist/assets/remoteEntry.js" ]; then
+            echo "[Error] 未生成 dist/assets/remoteEntry.js，联邦组件无法被宿主加载"
+            ls -lR dist || true
+            exit 1
+          fi
+
+          echo "[Info] 前端产物已生成："
+          ls -l dist/assets
+
+      # MoviePilot V3 已移除插件 ZIP 上传接口，安装只能走 GitHub 仓库目录或 Release 资产。
+      # Release 失败时后端会静默回退到「文件清单安装」——按仓库目录逐文件下载。
+      # 若仓库里没有 dist，那次回退就会把插件目录里已有的 dist 覆盖掉，直接变成「组件加载错误」。
+      # 所以必须把 dist 提交回仓库（官方 MoviePilot-Plugins 仓库也是这么做的）。
+      - name: Commit dist back to repository
+        run: |
+          set -euo pipefail
+          DIST_PATH="${{ matrix.plugin.backend_worker_path }}/${{ matrix.plugin.backend_path }}/dist"
+
+          if [ ! -d "$DIST_PATH" ]; then
+            echo "[Info] 无 dist 目录，跳过提交。"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # -f：即使 .gitignore 里还残留 dist/ 规则也强制入库，避免静默跳过
+          git add -f "$DIST_PATH"
+
+          if git diff --cached --quiet; then
+            echo "[Info] dist 无变化，跳过提交。"
+          else
+            git commit -m "chore(${{ matrix.plugin.backend_path }}): 重建并提交前端联邦产物 dist"
+            git push
+          fi
+
       - name: Package plugin source code
         run: |
+          set -euo pipefail
           FULL_SOURCE_PATH="${{ matrix.plugin.backend_worker_path }}/${{ matrix.plugin.backend_path }}"
           STAGING_ROOT="$RUNNER_TEMP/release-package"
           STAGING_PLUGIN_PATH="$STAGING_ROOT/${{ matrix.plugin.backend_path }}"
@@ -131,34 +172,28 @@ jobs:
             exit 1
           fi
 
-          echo "打包工作将在 '${{ matrix.plugin.backend_worker_path }}' 目录下进行..."
-          echo "目标插件目录是 '${{ matrix.plugin.backend_path }}'..."
+          echo "[Info] 打包工作将在 '${{ matrix.plugin.backend_worker_path }}' 目录下进行..."
+          echo "[Info] 目标插件目录是 '${{ matrix.plugin.backend_path }}'..."
 
           rm -rf "$STAGING_ROOT"
           mkdir -p "$STAGING_PLUGIN_PATH"
 
-          if [ "${{ matrix.plugin.backend_worker_path }}" = "plugins.v2" ]; then
-            echo "[Info] plugins.v2 插件仅打包最终运行所需文件..."
+          if [ -f "$FULL_SOURCE_PATH/package.json" ] && [ -d "$FULL_SOURCE_PATH/dist" ]; then
+            echo "[Info] 联邦前端插件：仅打包最终运行所需文件..."
 
             if [ ! -f "$FULL_SOURCE_PATH/__init__.py" ]; then
               echo "[Error] 缺少必要文件: $FULL_SOURCE_PATH/__init__.py"
               exit 1
             fi
-
             cp "$FULL_SOURCE_PATH/__init__.py" "$STAGING_PLUGIN_PATH/__init__.py"
 
             if [ -f "$FULL_SOURCE_PATH/requirements.txt" ]; then
               cp "$FULL_SOURCE_PATH/requirements.txt" "$STAGING_PLUGIN_PATH/requirements.txt"
             fi
 
-            if [ ! -d "$FULL_SOURCE_PATH/dist" ]; then
-              echo "[Error] 缺少前端构建产物目录: $FULL_SOURCE_PATH/dist"
-              exit 1
-            fi
-
             cp -R "$FULL_SOURCE_PATH/dist" "$STAGING_PLUGIN_PATH/dist"
           else
-            echo "[Info] 非 plugins.v2 插件，保持原有整目录打包逻辑..."
+            echo "[Info] 非联邦前端插件，保持原有整目录打包逻辑..."
             cp -R "$FULL_SOURCE_PATH/." "$STAGING_PLUGIN_PATH/"
           fi
 
