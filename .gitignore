@@ -20,6 +20,8 @@ parts/
 sdist/
 var/
 wheels/
+# 115 插件的 Rust 扩展不在 PyPI 上，预编译 wheel 必须随仓库入库
+!plugins.v3/p115strmhelper/wheels/
 share/python-wheels/
 *.egg-info/
 .installed.cfg

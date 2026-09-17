@@ -11,5 +11,18 @@
     "history": {
       "v3.0.0": "MoviePilot V3 专用分支：构建工具链对齐宿主（Vite 5 / vite-plugin-federation 1.4.1 / vue 3.5.13 / vuetify 3.7.3），dist 联邦产物随仓库分发，修复 V3 下前端「组件加载错误」。"
     }
+  },
+  "P115StrmHelper": {
+    "name": "115网盘STRM助手（自用版）",
+    "description": "115网盘STRM生成一条龙服务（自用版，含 MoviePilot V3 兼容修复）",
+    "labels": "云盘",
+    "version": "3.0.0",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
+    "author": "DDSRem,yuwancumian2009",
+    "level": 1,
+    "release": true,
+    "history": {
+      "v3.0.0": "MoviePilot V3 自用版：基于上游 v2.8.74，修复整理接管在 finally 中调用 V3 已移除的 _TransferChain__finish_scrape_batch_task 导致订阅下载完成后自动整理失败的问题"
+    }
   }
 }
