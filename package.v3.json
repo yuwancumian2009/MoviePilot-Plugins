@@ -16,12 +16,13 @@
     "name": "115网盘STRM助手（自用版）",
     "description": "115网盘STRM生成一条龙服务（自用版，含 MoviePilot V3 兼容修复）",
     "labels": "云盘",
-    "version": "3.0.1",
+    "version": "3.0.2",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Frontend/refs/heads/v2/src/assets/images/misc/u115.png",
     "author": "DDSRem,yuwancumian2009",
     "level": 1,
     "release": true,
     "history": {
+      "v3.0.2": "修复订阅下载后自动整理失败：V3 的 chain.transfer() 已变为会重新准入的兼容命令，插件回退路径调用它会撞上『源文件已有活动整理任务』并导致外层任务缺少执行检查点、终态结算抛错。改为在 V3 宿主上委托原生 durable 整理流程（V2 宿主行为不变）。",
       "v3.0.1": "修复发布流程：纯 Python 插件不再被 npm 缓存步骤中断，重新发版。",
       "v3.0.0": "MoviePilot V3 自用版：基于上游 v2.8.74，修复整理接管在 finally 中调用 V3 已移除的 _TransferChain__finish_scrape_batch_task 导致订阅下载完成后自动整理失败的问题"
     }
