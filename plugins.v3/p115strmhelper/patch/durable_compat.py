@@ -17,9 +17,7 @@ durable 生命周期得以闭环；V2 宿主上完全沿用原有实现
 
 from app.log import logger
 
-from .transfer_chain import TransferChainPatcher
-
-V3_DURABLE_ENTRY = "_TransferChain__plan_checkpoint_and_execute"
+from .transfer_chain import V3_DURABLE_ENTRY, TransferChainPatcher
 
 _installed = False
 

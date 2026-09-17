@@ -158,6 +158,7 @@ class SentryManager:
         """
         self.sentry_hub = NoopSentryHub()
         self._patched = False
+        self._original_capture_exception = None
 
         self._ignored_rules: List[Dict[str, Any]] = [
             {"type": U115NoCheckInException},
@@ -231,7 +232,7 @@ class SentryManager:
                     integrations=[
                         DedupeIntegration(),
                         StdlibIntegration(),
-                        ExcepthookIntegration(always_run=True),
+                        ExcepthookIntegration(always_run=False),
                         SqlalchemyIntegration(),
                     ],
                     before_send=self._before_send,
@@ -248,6 +249,10 @@ class SentryManager:
                 self._patched = True
 
         else:
+            # 插件关闭上报时必须归还全局 sentry_sdk.capture_exception，
+            # 否则宿主的错误上报会被这个补丁静默吞掉（仅在插件 Hub 上下文内才真正上报）。
+            self._restore_monkey_patch()
+
             if not is_real_hub_active:
                 logger.debug("【Sentry】Sentry is already disabled. No changes made.")
                 return
@@ -255,11 +260,24 @@ class SentryManager:
             logger.debug("【Sentry】Disabling Sentry error reporting...")
             self.sentry_hub = NoopSentryHub()
 
+    def _restore_monkey_patch(self):
+        """
+        卸载猴子补丁，恢复 sentry_sdk.capture_exception 的全局实现
+        """
+        if not self._patched:
+            return
+        if self._original_capture_exception is not None:
+            sentry_sdk.capture_exception = self._original_capture_exception
+            self._original_capture_exception = None
+        self._patched = False
+        logger.debug("【Sentry】已恢复 sentry_sdk.capture_exception 全局实现")
+
     def _apply_monkey_patch(self):
         """
         应用猴子补丁，确保只对我们自己的 Hub 上报
         """
         _original_capture_exception = sentry_sdk.capture_exception
+        self._original_capture_exception = _original_capture_exception
 
         def _patched_capture_exception(*args, **kwargs):
             if Hub.current is self.sentry_hub:

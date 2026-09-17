@@ -766,6 +766,16 @@ class ConfigManager(BaseModel):
         default=False,
         description="接管网盘整理（启用后将接管 115 → 115 的整理任务进行批量处理，需要存储模块为 '115网盘Plus'）",
     )
+    pan_transfer_takeover_v3: bool = Field(
+        default=False,
+        description=(
+            "在 MoviePilot V3 上启用整理接管（不建议开启）。"
+            "V3 的整理是 durable 管线（准入→租约→检查点→执行→终态结算），"
+            "接管需要整体替换 __handle_transfer，会绕过这条管线，"
+            "造成整理任务缺少持久执行检查点、队列状态与宿主脱节，"
+            "并可能连带影响订阅搜索等依赖同一运行时的任务。默认关闭。"
+        ),
+    )
     pan_transfer_linked_subtitle_audio: bool = Field(
         default=True,
         description="字幕与音轨关联整理，默认开启（开启：同目录发现字幕/音轨并随主视频批量处理，队列中忽略独立字幕/音轨任务；关闭：与 MoviePilot 一致，字幕/音轨为独立任务并按批次排序以配合刮削）",

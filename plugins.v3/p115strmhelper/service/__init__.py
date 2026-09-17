@@ -37,6 +37,7 @@ from ..helper.webdav import WebdavCore
 from ..helper.mediaserver import emby_mediainfo_queue
 from ..helper.mediasyncdel.webhook_queue import sync_del_webhook_queue
 from ..patch import TransferChainPatcher
+from ..patch.transfer_chain import is_v3_durable_host
 from ..schemas.monitor import ObserverInfo
 from ..service.backup import BackupService
 from ..service.fuse import FuseManager
@@ -192,6 +193,20 @@ class ServiceHelper:
             logger.error(f"服务项初始化失败: {e}")
             return False
 
+    @staticmethod
+    def _v3_takeover_blocked() -> bool:
+        """
+        判断当前是否应拒绝在 MoviePilot V3 上启用整理接管
+
+        V3 起 TransferChain 为 durable 管线，接管会绕过准入/检查点/终态结算，
+        因此默认拒绝；只有用户显式开启 pan_transfer_takeover_v3 才放行。
+
+        :return: 应拒绝接管时返回 True
+        """
+        if not is_v3_durable_host():
+            return False
+        return not bool(configer.get_config("pan_transfer_takeover_v3"))
+
     def _init_transfer_enhancement(self):
         """
         初始化或更新接管网盘整理功能
@@ -215,6 +230,16 @@ class ServiceHelper:
                     "【整理接管】接管网盘整理功能需要存储模块为 '115网盘Plus'，当前存储模块为 "
                     f"'{configer.storage_module}'，接管功能已禁用"
                 )
+            elif self._v3_takeover_blocked():
+                logger.warn(
+                    "【整理接管】检测到 MoviePilot V3 的 durable 整理管线，已跳过整理接管："
+                    "V3 的整理包含 准入→租约→检查点→执行→终态结算 完整生命周期，"
+                    "整体替换 __handle_transfer 会绕过该生命周期，导致整理任务缺少持久执行检查点、"
+                    "队列状态与宿主脱节（jobview / 准入记录泄漏），并可能连带阻塞订阅搜索等"
+                    "共享同一运行时的任务。V3 上的 115→115 整理将改由宿主原生流程执行；"
+                    "插件的命名字段补充、STRM 生成、整理拦截等事件能力不受影响。"
+                    "如确需在 V3 上强制接管，请在插件配置中开启 pan_transfer_takeover_v3。"
+                )
             else:
                 try:
                     self.transfer_handler = TransferHandler(
@@ -230,6 +255,9 @@ class ServiceHelper:
                         task_manager=self.transfer_task_manager,
                         handler=self.transfer_handler,
                         storage_module="115网盘Plus",
+                        # 走到这里说明已通过 _v3_takeover_blocked 判定：
+                        # 非 V3 宿主，或用户显式开启了 pan_transfer_takeover_v3
+                        allow_v3=True,
                     )
                     logger.info("【整理接管】已启用")
                 except Exception as e:

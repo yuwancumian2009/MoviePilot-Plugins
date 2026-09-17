@@ -10,6 +10,38 @@ if TYPE_CHECKING:
     from ..helper.transfer import TransferTaskManager, TransferHandler
 
 
+# MoviePilot V3 将 TransferChain 重构为 durable 整理管线（准入 → 租约 → 检查点 → 执行 → 终态结算），
+# 该私有入口仅在 V3 宿主上存在，可作为版本判别依据。
+V3_DURABLE_ENTRY = "_TransferChain__plan_checkpoint_and_execute"
+
+
+def is_v3_durable_transfer_chain(chain_cls) -> bool:
+    """
+    判断宿主 TransferChain 是否已重构为 V3 durable 整理管线
+
+    :param chain_cls: TransferChain 类
+    :return: 是 V3 durable 宿主时返回 True
+    """
+    return hasattr(chain_cls, V3_DURABLE_ENTRY)
+
+
+def is_v3_durable_host() -> bool:
+    """
+    判断当前 MoviePilot 宿主是否为 V3（durable 整理管线）
+
+    宿主未提供 TransferChain（导入失败等异常场景）时按"非 V3"处理，保持原有兼容行为。
+
+    :return: 是 V3 宿主时返回 True
+    """
+    try:
+        from app.chain.transfer import TransferChain
+
+        return is_v3_durable_transfer_chain(TransferChain)
+    except Exception:
+        return False
+
+
+
 class TransferChainPatcher:
     """
     TransferChain 补丁管理器
@@ -28,6 +60,7 @@ class TransferChainPatcher:
         task_manager: "TransferTaskManager",
         handler: "TransferHandler",
         storage_module: str,
+        allow_v3: bool = False,
     ):
         """
         启用补丁
@@ -35,6 +68,9 @@ class TransferChainPatcher:
         :param task_manager: TransferTaskManager 实例
         :param handler: TransferHandler 实例
         :param storage_module: 存储模块名称
+        :param allow_v3: 是否允许在 MoviePilot V3（durable 整理管线）上接管。
+            默认 False —— V3 的整理包含完整的准入/租约/检查点/终态结算生命周期，
+            整体替换 __handle_transfer 会绕过该生命周期，故默认拒绝接管。
         """
         with cls._lock:
             if cls._enabled:
@@ -43,6 +79,13 @@ class TransferChainPatcher:
 
             try:
                 from app.chain.transfer import TransferChain
+
+                if is_v3_durable_transfer_chain(TransferChain) and not allow_v3:
+                    logger.warn(
+                        "【整理接管】宿主为 MoviePilot V3 durable 整理管线，接管补丁未安装"
+                        "（接管会绕过准入/检查点/终态结算，导致整理状态与宿主脱节）"
+                    )
+                    return
 
                 cls._task_manager = task_manager
                 cls._handler = handler
@@ -121,6 +164,10 @@ class TransferChainPatcher:
         from app.schemas.types import MediaType, NotificationType
 
         from ..schemas.transfer import TransferTask as PluginTransferTask
+
+        # 标记本次调用是否已把任务转交插件批量队列异步处理。
+        # 转交后宿主侧不能再按"整理已结束"清理作业，否则 jobview 状态与插件队列脱节。
+        handed_off_to_plugin = False
 
         try:
             ########## 原始方法执行部分 ##########
@@ -425,6 +472,7 @@ class TransferChainPatcher:
 
                 # 加入批量队列
                 cls._task_manager.add_task(plugin_task)
+                handed_off_to_plugin = True
 
                 logger.info(
                     f"【整理接管】任务已加入批量队列: {task.fileitem.name} -> {target_path}"
@@ -445,19 +493,27 @@ class TransferChainPatcher:
                 logger.error(f"【整理接管】回退到原方法也失败: {fallback_error}")
                 return False, f"整理异常: {e}"
         finally:
-            # 与原生 __handle_transfer 一致：每次处理完尝试移除已完成作业，并清理批次 pending 集合
-            chain_self.jobview.try_remove_job(task)
-            # MoviePilot V3 重构 TransferChain 后不再提供该私有方法，缺失时跳过
-            # 避免在 finally 中抛出 AttributeError 覆盖 try 块已返回的成功结果
-            finish_scrape_batch = getattr(
-                chain_self, "_TransferChain__finish_scrape_batch_task", None
-            )
-            if callable(finish_scrape_batch):
-                finish_scrape_batch(task)
-            else:
+            # 与原生 __handle_transfer 一致：每次处理完尝试移除已完成作业，并清理批次 pending 集合。
+            # 例外：任务已转交插件批量队列时，实际整理尚未发生，此时清理会让宿主误判为
+            # "整理已完成"，造成 jobview / 整理队列状态与插件侧脱节，故保留作业交给插件收尾。
+            if handed_off_to_plugin:
                 logger.debug(
-                    "【整理接管】当前 MoviePilot 版本不存在 __finish_scrape_batch_task，跳过批次 pending 清理"
+                    f"【整理接管】任务已转交插件批量队列，保留宿主作业状态: "
+                    f"{task.fileitem.path}"
                 )
+            else:
+                chain_self.jobview.try_remove_job(task)
+                # MoviePilot V3 重构 TransferChain 后不再提供该私有方法，缺失时跳过
+                # 避免在 finally 中抛出 AttributeError 覆盖 try 块已返回的成功结果
+                finish_scrape_batch = getattr(
+                    chain_self, "_TransferChain__finish_scrape_batch_task", None
+                )
+                if callable(finish_scrape_batch):
+                    finish_scrape_batch(task)
+                else:
+                    logger.debug(
+                        "【整理接管】当前 MoviePilot 版本不存在 __finish_scrape_batch_task，跳过批次 pending 清理"
+                    )
 
     @classmethod
     def _derive_transfer_flags(cls, task) -> Tuple[bool, bool, bool]:
