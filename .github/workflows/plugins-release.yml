@@ -87,9 +87,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v5
 
-      # plugins.v2 / plugins.v3 都是联邦前端插件代际；plugins（v1）没有前端构建
+      # 仅当插件目录确实存在 package.json（联邦前端插件）时才初始化 Node。
+      # 纯 Python 插件（如 p115strmhelper）没有 package-lock.json，
+      # setup-node 会因缓存路径解析失败而直接中断整个发布任务。
       - name: Setup Node.js
-        if: ${{ startsWith(matrix.plugin.backend_worker_path, 'plugins.v') }}
+        if: ${{ hashFiles(format('{0}/{1}/package.json', matrix.plugin.backend_worker_path, matrix.plugin.backend_path)) != '' }}
         uses: actions/setup-node@v4
         with:
           node-version: 20
