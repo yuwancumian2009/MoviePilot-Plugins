@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -9,7 +9,10 @@ class BrowseDirParams(BaseModel):
     """
 
     path: str = Field(default="/", description="目录路径")
-    is_local: bool = Field(default=False, description="是否本地目录")
+    is_local: Optional[bool] = Field(
+        default=None,
+        description="是否本地目录，不传时按路径是否存在于当前运行环境自动判断",
+    )
 
 
 class DirectoryItem(BaseModel):
