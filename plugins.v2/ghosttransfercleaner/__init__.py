@@ -10,30 +10,42 @@ MoviePilot 在整理入库成功后会写入一条「整理记录」（transferh
 于是会出现这种情况：媒体文件被手工误删后，整理记录仍然留在库里。
 此后再次下载同一资源，MP 会因为「已有整理记录」而直接跳过整理，无法自动入库。
 
-本插件用于体检这类「幽灵整理记录」：整理记录还在，但它记录的目标路径
-（以及记录中的媒体文件）在当前存储上已经不存在了。
+本插件用于体检这类「幽灵整理记录」：整理记录还在，但它对应的媒体文件
+实际上已经不在媒体库里了。
+
+判定依据：只比对 NAS 本地 strm 文件
+-----------------------------------
+媒体库为 strm 形态时，**一个 strm 文件对应一个云端（115）媒体文件**，
+两者默认一一对应。因此判断一条整理记录是否还有效，只需要看它记录的目标
+路径在本地 strm 目录里还能不能找到对应文件，**完全不需要（也不应该）去
+访问云端**——这既避免了 115 风控，也更快、更稳。
+
+匹配方式为「后缀匹配」：把整理记录的目标路径逐级剥掉前导目录，拼到每个
+已配置的 strm 根目录下查找同名 .strm，命中即认为媒体还在。
+这样可以兼容「记录里是 115 路径、本地是 strm 目录」这类路径前缀不一致的情况。
 
 判定分级
 --------
-- 整部缺失：目标路径不存在，且其上级目录也不存在 —— 说明整部媒体都没了，
+- 整部缺失：strm 目录树里连该节目目录都找不到 —— 整部媒体都没了，
   属于高可信幽灵记录，可安全清理。
-- 局部缺失：目标路径不存在，但上级目录仍在 —— 可能只是删了其中几集，
-  也可能是记录已过时，需要人工确认后再清理。
+- 局部缺失：节目目录还在，但该文件对应的 strm 不存在 —— 可能只是删了
+  其中几集，也可能是记录已过时，需要人工确认后再清理。
 
 安全设计
 --------
-1. 只读取整理记录，不触碰任何媒体文件；清理仅删除数据库里的整理记录。
-2. 默认只用文件系统/存储层事实做判断，不做任何猜测。
+1. **绝不访问云端 / 远端存储**：不做任何 115、WebDAV、存储链（StorageChain）
+   查询，只读取本地文件系统与整理记录本身，从根上规避 115 风控。
+2. 只读取整理记录，不触碰任何媒体文件；清理仅删除数据库里的整理记录。
 3. 一键清理需要先在插件配置中显式打开「允许一键清理」开关。
-4. 若超过八成的记录都被判定为丢失，视为「媒体库挂载路径可能发生变化」的
-   异常信号，自动禁止清理并给出提示。
+4. 若超过八成的记录都被判定为丢失，视为「strm 目录配置有误或媒体库结构
+   发生变化」的异常信号，自动禁止清理并给出提示。
 """
 
 import json
+import os
 import threading
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.core.event import eventmanager, Event
@@ -51,7 +63,15 @@ LEVEL_TEXT = {
     LEVEL_PART: "局部缺失",
 }
 
-# 单次扫描的最长耗时（秒），防止网络存储检查把请求挂死
+# 单条路径的探测结果
+STATE_OK = "ok"
+STATE_UNKNOWN = "unknown"
+
+# strm 扩展名
+STRM_SUFFIX = ".strm"
+# 判定引擎版本：本地 strm 比对（1=旧的存储层查询）
+ENGINE_VERSION = 2
+# 单次扫描的最长耗时（秒）
 SCAN_DEADLINE = 60
 # 页面最多展示条数
 PAGE_LIMIT = 200
@@ -61,9 +81,10 @@ CACHE_LIMIT = 1000
 SUSPICIOUS_MIN_SAMPLE = 20
 # 判定为「异常占比过高」的比例
 SUSPICIOUS_RATIO = 0.8
-
-# 本地存储的别名（不同版本/配置下可能是空值、local 等）
-LOCAL_STORAGE_ALIAS = {"", "local", "localstorage", "local_storage"}
+# 后缀匹配时最多回溯的目录层数（防止异常记录产生大量探测）
+MAX_TAIL_DEPTH = 8
+# 目录内容缓存的最大条目数
+DIR_CACHE_LIMIT = 20000
 
 
 class GhostTransferCleaner(_PluginBase):
@@ -76,7 +97,7 @@ class GhostTransferCleaner(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     # 插件作者
     plugin_author = "呵呵"
     # 作者主页
@@ -91,6 +112,8 @@ class GhostTransferCleaner(_PluginBase):
     # ---- 配置项 ----
     _enabled = False
     _notify = True
+    _strm_paths: List[str] = []
+    _path_map: List[Tuple[str, str]] = []
     _check_files = False
     _only_whole = True
     _allow_clean = False
@@ -104,7 +127,8 @@ class GhostTransferCleaner(_PluginBase):
     _stats: Dict[str, Any] = {}
     _scanning = False
     _lock = threading.Lock()
-    _storage_chain: Any = None
+    # 目录内容缓存：{目录绝对路径: {小写名称: 是否目录}}，None 表示该目录不可访问
+    _dir_cache: Dict[str, Optional[Dict[str, bool]]] = {}
 
     # ------------------------------------------------------------------
     # 生命周期
@@ -114,6 +138,8 @@ class GhostTransferCleaner(_PluginBase):
         # 重置配置
         self._enabled = False
         self._notify = True
+        self._strm_paths = []
+        self._path_map = []
         self._check_files = False
         self._only_whole = True
         self._allow_clean = False
@@ -121,12 +147,15 @@ class GhostTransferCleaner(_PluginBase):
         self._min_age_days = 0
         self._max_records = 5000
         self._cron = ""
+        self._dir_cache = {}
 
         scan_now = False
         clean_now = False
         if config:
             self._enabled = bool(config.get("enabled"))
             self._notify = bool(config.get("notify", True))
+            self._strm_paths = self.__parse_lines(config.get("strm_paths"))
+            self._path_map = self.__parse_path_map(config.get("path_map"))
             self._check_files = bool(config.get("check_files", False))
             self._only_whole = bool(config.get("only_whole", True))
             self._allow_clean = bool(config.get("allow_clean", False))
@@ -301,6 +330,53 @@ class GhostTransferCleaner(_PluginBase):
                         "content": [
                             {
                                 "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "strm_paths",
+                                            "label": "strm 媒体库根目录（每行一个，容器内路径）",
+                                            "placeholder": "/media/strm\n/mnt/media/strm",
+                                            "rows": 3,
+                                            "hint": "填存放 strm 文件的本地目录，例如 /media/strm。"
+                                                    "本插件只比对这些目录下的 .strm 文件，不会访问 115 或任何云端接口；"
+                                                    "请勿填 115/WebDAV 等网络挂载路径。",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextarea",
+                                        "props": {
+                                            "model": "path_map",
+                                            "label": "路径前缀映射（可选，每行一条：记录中的前缀=本地实际前缀）",
+                                            "placeholder": "/115/电影=/media/strm/电影",
+                                            "rows": 2,
+                                            "hint": "仅在整理记录里的路径与本地 strm 目录前缀对不上时才需要填。"
+                                                    "不填时插件会自动做「后缀匹配」，多数情况无需配置。",
+                                            "persistent-hint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
                                 "content": [
                                     {
@@ -327,7 +403,7 @@ class GhostTransferCleaner(_PluginBase):
                                         "component": "VSwitch",
                                         "props": {
                                             "model": "check_files",
-                                            "label": "深度检查（按记录内的文件清单判断）",
+                                            "label": "深度检查（按记录内的文件清单逐个核对 strm）",
                                         },
                                     }
                                 ],
@@ -468,7 +544,8 @@ class GhostTransferCleaner(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "text": "本插件只读取整理记录并做路径存在性判断，不会删除任何媒体文件。"
+                                            "text": "本插件只读取整理记录、并比对 NAS 本地的 strm 文件，"
+                                                    "不访问 115 或任何云端接口（避免风控），也不会删除任何媒体文件。"
                                                     "「清理」仅删除数据库中的整理记录，清理后重新下载相同资源即可正常自动整理入库。"
                                                     "建议先看一遍数据页面列出的清单，确认无误再清理。",
                                         },
@@ -482,6 +559,8 @@ class GhostTransferCleaner(_PluginBase):
         ], {
             "enabled": False,
             "notify": True,
+            "strm_paths": "",
+            "path_map": "",
             "check_files": False,
             "only_whole": True,
             "allow_clean": False,
@@ -529,6 +608,8 @@ class GhostTransferCleaner(_PluginBase):
                 f"（整部缺失 {stats.get('whole', 0)}、局部缺失 {stats.get('part', 0)}）｜"
                 f"耗时 {stats.get('duration', 0)} 秒"
             )
+            if self._strm_paths:
+                head += f"｜比对 strm 目录 {len(self._strm_paths)} 个"
             if stats.get("truncated"):
                 head += "｜⚠️ 本次扫描因超时提前结束，结果可能不完整"
             if stats.get("unknown"):
@@ -541,6 +622,20 @@ class GhostTransferCleaner(_PluginBase):
                 "props": {"type": head_type, "variant": "tonal", "text": head},
             }
         ]
+
+        if not self._strm_paths:
+            content.append(
+                {
+                    "component": "VAlert",
+                    "props": {
+                        "type": "error",
+                        "variant": "tonal",
+                        "text": "尚未配置「strm 媒体库根目录」，插件无法判断整理记录是否还有效。"
+                                "请先到插件配置中填写存放 strm 文件的本地目录（例如 /media/strm）再扫描；"
+                                "在配置完成前，扫描不会得出任何结论。",
+                    },
+                }
+            )
 
         if stats.get("last_action"):
             content.append(
@@ -561,9 +656,9 @@ class GhostTransferCleaner(_PluginBase):
                     "props": {
                         "type": "error",
                         "variant": "tonal",
-                        "text": "⚠️ 超过八成整理记录都被判定为丢失，这更像媒体库挂载路径发生了变化"
-                                "（例如容器内路径被改动），而不是文件真的被删。已自动禁止清理，"
-                                "请先核对 MoviePilot 的目录映射再操作。",
+                        "text": "⚠️ 超过八成整理记录都找不到对应的 strm 文件，这更像 strm 目录配置有误"
+                                "（例如根目录填错、媒体库目录结构变过），而不是文件真的被删。"
+                                "已自动禁止清理，请先核对上面配置的 strm 根目录再操作。",
                     },
                 }
             )
@@ -645,8 +740,8 @@ class GhostTransferCleaner(_PluginBase):
 
         foot = (
             f"共 {len(ghosts)} 条幽灵记录，页面最多展示 {PAGE_LIMIT} 条。"
-            "「整部缺失」表示目标路径及其上级目录都已不存在，可信度最高；"
-            "「局部缺失」表示上级目录还在，可能只是删了其中几集，建议先人工确认。"
+            "判定依据是本地 strm 文件：「整部缺失」表示 strm 目录树里连该节目目录都找不到，可信度最高；"
+            "「局部缺失」表示节目目录还在、只是该文件对应的 strm 没了，可能只删了其中几集，建议先人工确认。"
         )
         if not self._allow_clean:
             foot += " 当前未开启「允许一键清理」，页面上的清理按钮不会真正删除记录。"
@@ -684,6 +779,33 @@ class GhostTransferCleaner(_PluginBase):
         started = time.time()
         try:
             self._scanning = True
+            # 每次扫描都重置目录缓存，确保读到最新的 strm 目录结构
+            self._dir_cache = {}
+
+            # 没有配置 strm 根目录时不给出任何结论，避免把整库误判为幽灵
+            if not self._strm_paths:
+                stats = {
+                    "engine": ENGINE_VERSION,
+                    "total": 0,
+                    "scanned": 0,
+                    "ghost": 0,
+                    "whole": 0,
+                    "part": 0,
+                    "unknown": 0,
+                    "truncated": False,
+                    "suspicious": False,
+                    "duration": 0,
+                    "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "cleaned": 0,
+                    "last_action": "尚未配置 strm 媒体库根目录，无法判断整理记录是否有效",
+                    "strm_paths": [],
+                }
+                self._ghosts = []
+                self._stats = stats
+                self.__save()
+                logger.warning("幽灵整理记录：未配置 strm 媒体库根目录，本次扫描未执行")
+                return stats
+
             rows, total = self.__load_records()
 
             ghosts: List[Dict[str, Any]] = []
@@ -713,6 +835,7 @@ class GhostTransferCleaner(_PluginBase):
             suspicious = scanned >= SUSPICIOUS_MIN_SAMPLE and len(ghosts) >= scanned * SUSPICIOUS_RATIO
 
             stats: Dict[str, Any] = {
+                "engine": ENGINE_VERSION,
                 "total": total,
                 "scanned": scanned,
                 "ghost": len(ghosts),
@@ -725,6 +848,7 @@ class GhostTransferCleaner(_PluginBase):
                 "scan_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "cleaned": 0,
                 "last_action": "",
+                "strm_paths": list(self._strm_paths),
             }
 
             if clean and ghosts:
@@ -750,7 +874,7 @@ class GhostTransferCleaner(_PluginBase):
                 self.__notify_result(stats, self._ghosts)
 
             logger.info(
-                f"幽灵整理记录：体检完成，检查 {scanned}/{total} 条，"
+                f"幽灵整理记录：体检完成（依据本地 strm），检查 {scanned}/{total} 条，"
                 f"发现幽灵记录 {stats['ghost']} 条（整部缺失 {stats['whole']}、局部缺失 {stats['part']}）"
             )
         finally:
@@ -779,8 +903,7 @@ class GhostTransferCleaner(_PluginBase):
     def __check(self, row: Dict[str, Any]) -> Tuple[str, Optional[Dict[str, Any]]]:
         """检查单条整理记录，返回（ok/ghost/unknown, 幽灵记录详情）。"""
         raw_dest = row.get("dest") or ""
-        storage = str(row.get("dest_storage") or row.get("src_storage") or "").strip()
-        # 路径原样保留用于存在性判断（Linux 下反斜杠是合法文件名字符），仅展示时统一分隔符
+        # 路径原样保留（Linux 下反斜杠是合法文件名字符），仅展示时统一分隔符
         dests = [
             item.strip()
             for item in str(raw_dest).replace("\r", "\n").split("\n")
@@ -789,40 +912,41 @@ class GhostTransferCleaner(_PluginBase):
         if not dests:
             return "unknown", None
 
-        states = [self.__exists(path, storage) for path in dests]
-        if all(state is None for state in states):
-            return "unknown", None
-        dest_exists = any(state is True for state in states)
+        # 主判定：记录的目标路径在本地 strm 目录里还能不能找到对应文件
+        states = [self.__probe_strm(path) for path in dests]
+        if all(state == STATE_UNKNOWN for state in states):
+            return STATE_UNKNOWN, None
+        dest_exists = STATE_OK in states
 
-        # 记录中的媒体文件（可选深度检查）
+        # 深度检查：按记录内的文件清单逐个核对 strm（可选）
         file_paths: List[str] = []
         files_left = 0
         files_missing = 0
         if self._check_files:
             file_paths = self.__extract_paths(row.get("files"))
             for path in file_paths:
-                state = self.__exists(path, storage)
-                if state is True:
+                state = self.__probe_strm(path)
+                if state == STATE_OK:
                     files_left += 1
-                elif state is False:
+                elif state != STATE_UNKNOWN:
                     files_missing += 1
 
         if dest_exists:
-            # 目标路径还在：只有开启深度检查、且记录中的媒体文件全部缺失时才判定为幽灵
+            # 目标路径的 strm 还在：正常记录
             if not self._check_files or not file_paths or files_left > 0:
-                return "ok", None
+                return STATE_OK, None
             level = LEVEL_PART
-            reason = f"目标路径仍在，但记录中的 {files_missing} 个媒体文件已全部丢失"
+            reason = f"目标路径的 strm 仍在，但记录中的 {files_missing} 个文件已全部没有对应 strm"
         else:
             if self._check_files and file_paths and files_left > 0:
-                return "ok", None
-            parents = {self.__exists(str(Path(path).parent), storage) for path in dests}
-            if parents == {False} or (False in parents and True not in parents and None not in parents):
+                return STATE_OK, None
+            # 所有目标路径都指向「整部缺失」时才升级为整部缺失
+            if states and all(state == LEVEL_WHOLE for state in states):
                 level = LEVEL_WHOLE
-                reason = "目标路径及其上级目录均已不存在（整部媒体已丢失）"
+                reason = "strm 媒体库中找不到该节目目录（整部媒体已缺失）"
             else:
                 level = LEVEL_PART
-                reason = "目标路径已不存在（上级目录仍在）"
+                reason = "节目目录仍在 strm 媒体库中，但该文件对应的 strm 已不存在"
 
         return "ghost", {
             "id": row.get("id"),
@@ -836,7 +960,7 @@ class GhostTransferCleaner(_PluginBase):
             "mode": row.get("mode") or "",
             "src": row.get("src") or "",
             "dest": self.__display_path(dests[0]),
-            "storage": storage or "local",
+            "match": "strm",
             "level": level,
             "level_text": LEVEL_TEXT[level],
             "reason": reason,
@@ -883,56 +1007,123 @@ class GhostTransferCleaner(_PluginBase):
         return deleted, failed
 
     # ------------------------------------------------------------------
-    # 存在性判断
+    # strm 比对（只读本地文件系统，绝不访问云端）
     # ------------------------------------------------------------------
-    def __exists(self, path: str, storage: str) -> Optional[bool]:
+    def __probe_strm(self, path: str) -> str:
         """
-        判断路径是否存在。
-        :return True 存在 / False 不存在 / None 无法判断
+        判断一条记录路径在本地 strm 库中是否还有对应文件。
+
+        采用「后缀匹配」：把记录路径逐级剥掉前导目录，拼到每个 strm 根目录下查找
+        同名 .strm，命中即认为媒体还在。这样可兼容「记录里是 115 路径、本地是 strm
+        目录」这类前缀不一致的情况，无需用户精确配置路径映射。
+
+        :return ok（找到对应 strm）/ whole（连节目目录都找不到，整部缺失）/
+                part（节目目录还在但该文件的 strm 没了）/ unknown（无法判断）
         """
         if not path:
-            return None
-        path = str(path).strip()
-        if not path:
-            return None
+            return STATE_UNKNOWN
+        return self.__probe_normalized(self.__normalize(path))
 
-        # 本地存储（或未声明存储类型）直接用文件系统判断
-        if storage.strip().lower() in LOCAL_STORAGE_ALIAS:
-            try:
-                return Path(path).exists()
-            except Exception as err:
-                logger.debug(f"幽灵整理记录：检查本地路径 {path} 失败：{err}")
-                return None
+    def __probe_normalized(self, normalized: str) -> str:
+        segments = [seg for seg in str(normalized).split("/") if seg]
+        if not segments:
+            return STATE_UNKNOWN
 
-        # 其它存储走存储链
-        chain = self.__get_storage_chain()
-        if chain is None:
-            # 存储链不可用时退回本地判断，避免整条记录被误判
-            try:
-                if Path(path).exists():
-                    return True
-            except Exception:
-                pass
+        filename = segments[-1]
+        dirs = segments[:-1]
+        names = self.__strm_names(filename)
+        if not names:
+            return STATE_UNKNOWN
+
+        dir_found = False
+        for root in self._strm_paths:
+            # 先试最完整的相对路径，再逐级剥离前导目录
+            for drop in range(0, min(len(dirs), MAX_TAIL_DEPTH) + 1):
+                tail = dirs[drop:]
+                for name in names:
+                    if self.__lookup(root, tail, name) is not None:
+                        return STATE_OK
+                # 该层级的父目录下是否存在同名节目目录
+                if tail and self.__lookup(root, tail[:-1], tail[-1]) is True:
+                    dir_found = True
+
+        return LEVEL_PART if dir_found else LEVEL_WHOLE
+
+    def __lookup(self, root: str, tail: List[str], name: str) -> Optional[bool]:
+        """
+        在 strm 根目录下按相对目录段查找某个条目（大小写不敏感）。
+        :return True 目录 / False 文件 / None 不存在
+        """
+        entries = self.__list_dir(self.__join(root, tail))
+        if entries is None:
             return None
+        return entries.get(str(name).lower())
+
+    def __list_dir(self, directory: str) -> Optional[Dict[str, bool]]:
+        """
+        列出目录内容（小写名称 -> 是否子目录），并缓存结果。
+        目录不存在、不可读或不是目录时返回 None 并缓存，避免重复扫描。
+        """
+        if directory in self._dir_cache:
+            return self._dir_cache[directory]
+
+        entries: Optional[Dict[str, bool]] = None
         try:
-            return bool(chain.get_file_item(storage=storage, path=Path(path)))
-        except Exception as err:
-            logger.debug(f"幽灵整理记录：通过存储链检查 {storage}:{path} 失败：{err}")
-            return None
+            if os.path.isdir(directory):
+                result: Dict[str, bool] = {}
+                with os.scandir(directory) as iterator:
+                    for item in iterator:
+                        try:
+                            result[item.name.lower()] = item.is_dir()
+                        except OSError:
+                            continue
+                entries = result
+        except OSError as err:
+            logger.debug(f"幽灵整理记录：读取目录 {directory} 失败：{err}")
+            entries = None
 
-    def __get_storage_chain(self):
-        if self._storage_chain is not None:
-            # False 表示当前版本不可用
-            return self._storage_chain or None
-        try:
-            from app.chain.storage import StorageChain
+        if len(self._dir_cache) < DIR_CACHE_LIMIT:
+            self._dir_cache[directory] = entries
+        return entries
 
-            self._storage_chain = StorageChain()
-            logger.debug("幽灵整理记录：已启用存储链用于远端存储检查")
-        except Exception as err:
-            logger.debug(f"幽灵整理记录：当前版本无可用存储链，改为本地路径判断：{err}")
-            self._storage_chain = False
-        return self._storage_chain or None
+    def __normalize(self, path: str) -> str:
+        """统一分隔符，并应用用户配置的路径前缀映射。"""
+        value = str(path).strip().replace("\\", "/")
+        for old, new in self._path_map:
+            if value.startswith(old):
+                value = f"{new}{value[len(old):]}"
+                break
+        return value
+
+    @staticmethod
+    def __join(root: str, tail: List[str]) -> str:
+        """把 strm 根目录与相对目录段拼成绝对路径。"""
+        parts = [seg for seg in (tail or []) if seg]
+        if not parts:
+            return root
+        return "/".join([str(root).rstrip("/")] + parts)
+
+    @staticmethod
+    def __strm_names(filename: str) -> List[str]:
+        """给出文件在 strm 库中的可能名称（原名、换成 .strm、补 .strm）。"""
+        name = str(filename or "").strip()
+        if not name:
+            return []
+
+        candidates = [name]
+        stem = name[: -len(STRM_SUFFIX)] if name.lower().endswith(STRM_SUFFIX) else name
+        # 去掉原扩展名后补上 .strm（.mkv/.mp4 → .strm）
+        if "." in stem:
+            stem = stem.rsplit(".", 1)[0]
+        if stem:
+            candidates.append(f"{stem}{STRM_SUFFIX}")
+        candidates.append(f"{name}{STRM_SUFFIX}")
+
+        result: List[str] = []
+        for candidate in candidates:
+            if candidate and candidate not in result:
+                result.append(candidate)
+        return result
 
     # ------------------------------------------------------------------
     # 工具方法
@@ -992,6 +1183,41 @@ class GhostTransferCleaner(_PluginBase):
         return result
 
     @staticmethod
+    def __parse_lines(raw: Any) -> List[str]:
+        """解析多行/逗号/分号分隔的路径列表，去重并保持顺序。"""
+        if not raw:
+            return []
+        text = (
+            str(raw)
+            .replace("\r", "\n")
+            .replace("，", ",")
+            .replace("；", "\n")
+            .replace(";", "\n")
+        )
+        values: List[str] = []
+        for chunk in text.split("\n"):
+            for item in chunk.split(","):
+                value = item.strip().strip('"').strip("'")
+                if value and value not in values:
+                    values.append(value)
+        return values
+
+    @staticmethod
+    def __parse_path_map(raw: Any) -> List[Tuple[str, str]]:
+        """解析「记录中的前缀=本地实际前缀」形式的路径映射规则，长前缀优先。"""
+        rules: List[Tuple[str, str]] = []
+        for line in GhostTransferCleaner.__parse_lines(raw):
+            if "=" not in line:
+                continue
+            old, _, new = line.partition("=")
+            old = old.strip().rstrip("/")
+            new = new.strip().rstrip("/")
+            if old and new:
+                rules.append((old, new))
+        rules.sort(key=lambda item: len(item[0]), reverse=True)
+        return rules
+
+    @staticmethod
     def __display_path(path: Any) -> str:
         """统一展示用的路径分隔符。"""
         return str(path or "").replace("\\", "/")
@@ -1011,7 +1237,7 @@ class GhostTransferCleaner(_PluginBase):
                 head = stats["last_action"]
             else:
                 head = (
-                    f"已检查整理记录 {stats.get('scanned', 0)} 条，"
+                    f"已比对 {stats.get('scanned', 0)} 条整理记录（依据本地 strm 文件），"
                     f"发现幽灵记录 {stats.get('ghost', 0)} 条"
                     f"（整部缺失 {stats.get('whole', 0)}、局部缺失 {stats.get('part', 0)}）"
                 )
@@ -1030,7 +1256,7 @@ class GhostTransferCleaner(_PluginBase):
             else:
                 lines.append("未发现幽灵整理记录，自动整理逻辑正常。")
             if stats.get("suspicious"):
-                lines.append("⚠️ 异常记录占比过高，疑似媒体库路径变更，已中止清理，请先核对目录映射。")
+                lines.append("⚠️ 超八成记录都找不到对应 strm，疑似 strm 根目录配置有误，已中止清理，请先核对配置。")
             if stats.get("truncated"):
                 lines.append("⚠️ 本次扫描超时提前结束，结果可能不完整。")
             self.systemmessage.put("\n".join(lines), title="幽灵整理记录")
@@ -1046,8 +1272,14 @@ class GhostTransferCleaner(_PluginBase):
         if isinstance(stored, dict):
             ghosts = stored.get("ghosts")
             stats = stored.get("stats")
-            self._ghosts = ghosts if isinstance(ghosts, list) else []
-            self._stats = stats if isinstance(stats, dict) else {}
+            if isinstance(stats, dict) and stats.get("engine") == ENGINE_VERSION:
+                self._ghosts = ghosts if isinstance(ghosts, list) else []
+                self._stats = stats
+            else:
+                # 旧版本（基于存储层查询）的结论已失效，直接丢弃，避免误导
+                self._ghosts = []
+                self._stats = {}
+                logger.info("幽灵整理记录：历史扫描结果来自旧判定引擎，已丢弃")
 
     def __save(self):
         try:

@@ -70,16 +70,17 @@
   },
   "GhostTransferCleaner": {
     "name": "幽灵整理记录",
-    "description": "体检「整理记录还在、媒体文件已丢失」的幽灵记录，支持一键清理，恢复正常自动整理入库。",
+    "description": "比对 NAS 本地 strm 文件，体检「整理记录还在、媒体文件已丢失」的幽灵记录，支持一键清理，恢复正常自动整理入库。",
     "labels": "系统",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png",
     "author": "呵呵",
     "level": 1,
     "release": false,
     "v3": false,
     "history": {
-      "v1.0.0": "首次发布：体检整理记录与媒体文件不一致的幽灵记录，支持一键清理（仅删记录、不删文件）。"
+      "v1.0.0": "首次发布：体检整理记录与媒体文件不一致的幽灵记录，支持一键清理（仅删记录、不删文件）。",
+      "v1.1.0": "改为只比对 NAS 本地 strm 文件，不再访问存储链/云端（规避 115 风控）；新增 strm 根目录与路径前缀映射配置。"
     }
   }
 }
