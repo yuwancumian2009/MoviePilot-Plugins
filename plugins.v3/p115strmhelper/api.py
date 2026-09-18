@@ -3,7 +3,7 @@ from io import BytesIO
 from datetime import datetime
 from dataclasses import asdict
 from time import time, sleep
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from pathlib import Path
 from threading import Thread
 from urllib.parse import quote, unquote
@@ -92,38 +92,6 @@ from .utils.url import UrlUtils
 from app.log import logger
 from app.core.cache import cached, TTLCache
 from app.helper.mediaserver import MediaServerHelper
-
-
-def _container_mount_points() -> List[str]:
-    """
-    解析当前运行环境内已挂载的目录
-
-    浏览本地目录失败时用它给出可用路径：插件跑在容器里，容器内可见的路径
-    与宿主机（NAS）上的路径不是一回事，读 /proc/self/mountinfo 能列出真实挂载点
-
-    :return List[str]: 排好序的挂载点列表
-    """
-    points: List[str] = []
-    try:
-        content = Path("/proc/self/mountinfo").read_text(
-            encoding="utf-8", errors="replace"
-        )
-        for line in content.splitlines():
-            parts = line.split(" ")
-            if len(parts) < 5:
-                continue
-            mount_point = parts[4]
-            if not mount_point or mount_point == "/":
-                continue
-            if mount_point.startswith(
-                ("/proc", "/sys", "/dev", "/etc", "/run", "/usr", "/var/lib")
-            ):
-                continue
-            if mount_point not in points:
-                points.append(mount_point)
-    except Exception:
-        pass
-    return sorted(points)
 
 
 @sentry_manager.capture_all_class_exceptions
@@ -477,36 +445,30 @@ class Api:
     ) -> ApiResponse[BrowseDirData]:
         """
         浏览目录
-
-        本地目录指插件运行环境（容器）内可见的路径，不是 NAS 宿主机的路径；
-        传入宿主机路径会因容器内不存在而失败，此时响应里会带上容器内实际可用的挂载点
         """
         path = Path(params.path)
         is_local = params.is_local
-        if is_local is None:
-            # 未显式指定时按路径是否真实存在判断，根路径始终按网盘处理，
-            # 否则网盘根目录会被容器根目录顶掉
-            is_local = path.as_posix() not in ("", "/") and path.is_dir()
 
         if is_local:
             try:
                 if not path.exists():
-                    mount_points = ", ".join(_container_mount_points()) or "未识别到"
-                    return ApiResponse(
-                        code=1,
-                        msg=(
-                            f"目录不存在: {path}。插件运行在容器内，"
-                            f"请填写容器内可见的路径，当前容器内可用的挂载点: {mount_points}"
-                        ),
+                    return ApiResponse(code=1, msg=f"目录不存在: {path}")
+                dirs = []
+                files = []
+                for item in path.iterdir():
+                    if item.is_dir():
+                        dirs.append(
+                            {"name": item.name, "path": str(item), "is_dir": True}
+                        )
+                    else:
+                        files.append(
+                            {"name": item.name, "path": str(item), "is_dir": False}
+                        )
+                return ApiResponse(
+                    data=BrowseDirData(
+                        path=str(path), items=sorted(dirs, key=lambda x: x["name"])
                     )
-                if not path.is_dir():
-                    return ApiResponse(code=1, msg=f"不是目录: {path}")
-                dirs = [
-                    {"name": item.name, "path": str(item), "is_dir": True}
-                    for item in sorted(path.iterdir(), key=lambda x: x.name)
-                    if item.is_dir()
-                ]
-                return ApiResponse(data=BrowseDirData(path=str(path), items=dirs))
+                )
             except Exception as e:
                 return ApiResponse(code=1, msg=f"浏览本地目录失败: {str(e)}")
         else:

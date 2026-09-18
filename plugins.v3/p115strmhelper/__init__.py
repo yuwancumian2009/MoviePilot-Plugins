@@ -50,7 +50,6 @@ from .core.cache import (
     sharestrmcacher,
 )
 from .core.config import configer
-from .core.form import build_config_form, build_config_model
 from .core.i18n import i18n
 from .core.message import post_message
 from .db_manager import ct_db_manager, init_database as ensure_database
@@ -923,36 +922,20 @@ class P115StrmHelper(_PluginBase):
     def get_render_mode() -> Tuple[str, Optional[str]]:
         """
         返回插件使用的前端渲染模式
-
-        本插件没有随仓库分发 Vue 联邦前端产物（dist/assets/remoteEntry.js）。
-        在 V3 上声明 vue 会让宿主把 dist/assets/remoteEntry.js 注册成远程入口，
-        前端加载时报「组件加载错误」，配置界面也就打不开。所以按产物是否真实
-        存在决定：有产物走 vue，没有则回到宿主默认的 vuetify 模式，由 get_form
-        生成配置界面
         :return: 前端渲染模式，前端文件目录
         """
-        remote_entry = Path(__file__).parent / "dist" / "assets" / "remoteEntry.js"
-        if remote_entry.is_file():
-            return "vue", "dist/assets"
-        return "vuetify", None
+        return "vue", "dist/assets"
 
     def get_form(self) -> Tuple[Optional[List[dict]], Dict[str, Any]]:
         """
-        返回插件配置界面
-
-        vue 模式下界面由前端产物自己渲染，这里只提供初始配置数据；
-        vuetify 模式下必须给出组件定义，否则配置页没有任何可编辑项
+        为Vue组件模式返回初始配置数据
+        Vue模式下，第一个参数返回None，第二个参数返回初始配置数据
         """
-        model = build_config_model(
-            self.api.get_config_api(), enabled=self.get_state()
-        )
-        if self.get_render_mode()[0] == "vue":
-            return None, model
-        return build_config_form(), model
+        return None, self.api.get_config_api()
 
     def get_page(self) -> Optional[List[dict]]:
         """
-        vue 与 vuetify 模式都不提供插件数据页面
+        Vue模式不使用Vuetify页面定义
         """
         return None
 
