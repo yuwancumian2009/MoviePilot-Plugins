@@ -39,6 +39,19 @@ MoviePilot 在整理入库成功后会写入一条「整理记录」（transferh
 strm 根目录体检结果、记录侧路径画像、交叉命中率与整改建议。
 报告只读本地文件系统，同样不访问云端。
 
+报告采用「后台生成 + 通知交付」：
+
+- MoviePilot 前端的事件处理是 `try { 调接口 } catch { console.error }`，
+  接口一旦异常，页面只会静默关掉进度框、不给任何提示，用户看到的就是
+  「点了没反应」。而本报告要遍历 strm 目录树，耗时可达几十秒，
+  同步接口很容易被判定成无响应。
+- 因此接口只负责「启动」，立刻返回；报告在后台线程里生成，
+  完成后**无论成功失败都通过通知渠道推送**，失败时连错误原因一起发出，
+  这样即使页面不刷新，用户在手机上也一定看得到结果。
+- 通知正文只保留「结论 / 逐条对照（前几条）/ 交叉命中 / 建议」，
+  完整报告写入插件目录的 `diagnose_report.txt`，并整篇打进 MP 日志。
+- 另外提供 `/ghostdiag` 远程命令作为入口，不依赖页面按钮。
+
 安全设计
 --------
 1. **绝不访问云端 / 远端存储**：不做任何 115、WebDAV、存储链（StorageChain）
@@ -51,6 +64,7 @@ strm 根目录体检结果、记录侧路径画像、交叉命中率与整改建
 
 import json
 import os
+import re
 import threading
 import time
 from collections import Counter
@@ -119,6 +133,16 @@ DIAG_INDEX_LIMIT = 4000
 DIAG_WALK_LIMIT = 40000
 DIAG_WALK_SECONDS = 8
 
+# ---- 通知推送参数 ----
+# 通知正文的长度上限：各渠道限制不同（企业微信最短，Telegram 4096），
+# 这里取一个能装下「结论 + 逐条对照 + 建议」的值；更短的渠道由 MP 自行截断，
+# 所以章节顺序按重要性排（结论最前），截断也只丢末尾的次要统计。
+NOTIFY_LIMIT = 2800
+# 通知里保留几条「逐条对照」——这是定位问题最关键的证据
+NOTIFY_ITEMS = 3
+# 完整报告落盘的文件名（写在插件目录下）
+REPORT_FILENAME = "diagnose_report.txt"
+
 
 class GhostTransferCleaner(_PluginBase):
     """幽灵整理记录：体检并清理「整理记录还在、媒体文件已丢失」的记录。"""
@@ -130,7 +154,7 @@ class GhostTransferCleaner(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
     # 插件版本
-    plugin_version = "1.2.0"
+    plugin_version = "1.3.0"
     # 插件作者
     plugin_author = "呵呵"
     # 作者主页
@@ -145,6 +169,7 @@ class GhostTransferCleaner(_PluginBase):
     # ---- 配置项 ----
     _enabled = False
     _notify = True
+    _notify_report = True
     _strm_paths: List[str] = []
     _path_map: List[Tuple[str, str]] = []
     _check_files = False
@@ -160,7 +185,11 @@ class GhostTransferCleaner(_PluginBase):
     _stats: Dict[str, Any] = {}
     _report: str = ""
     _report_time: str = ""
+    _report_path: str = ""
     _scanning = False
+    _diagnosing = False
+    # 完整报告的存放目录覆盖项（留空则自动推断，主要供离线测试使用）
+    _report_dir_override = ""
     _lock = threading.Lock()
     # 目录内容缓存：{目录绝对路径: {小写名称: 是否目录}}，None 表示该目录不可访问
     _dir_cache: Dict[str, Optional[Dict[str, bool]]] = {}
@@ -173,6 +202,7 @@ class GhostTransferCleaner(_PluginBase):
         # 重置配置
         self._enabled = False
         self._notify = True
+        self._notify_report = True
         self._strm_paths = []
         self._path_map = []
         self._check_files = False
@@ -185,12 +215,15 @@ class GhostTransferCleaner(_PluginBase):
         self._dir_cache = {}
         self._report = ""
         self._report_time = ""
+        self._report_path = ""
+        self._diagnosing = False
 
         scan_now = False
         clean_now = False
         if config:
             self._enabled = bool(config.get("enabled"))
             self._notify = bool(config.get("notify", True))
+            self._notify_report = bool(config.get("notify_report", True))
             self._strm_paths = self.__parse_lines(config.get("strm_paths"))
             self._path_map = self.__parse_path_map(config.get("path_map"))
             self._check_files = bool(config.get("check_files", False))
@@ -241,17 +274,27 @@ class GhostTransferCleaner(_PluginBase):
                 "desc": "体检幽灵整理记录",
                 "category": "插件",
                 "data": {"action": "ghosttransfercleaner_scan"},
-            }
+            },
+            {
+                "cmd": "/ghostdiag",
+                "event": EventType.PluginAction,
+                "desc": "生成诊断报告并推送到通知渠道",
+                "category": "插件",
+                "data": {"action": "ghosttransfercleaner_diag"},
+            },
         ]
 
     @eventmanager.register(EventType.PluginAction)
     def on_plugin_action(self, event: Event):
-        """响应 /ghost 远程命令，执行一次体检。"""
+        """响应 /ghost 与 /ghostdiag 远程命令。"""
         try:
             data = (event.event_data if event else None) or {}
-            if data.get("action") != "ghosttransfercleaner_scan":
-                return
-            self.__scan(clean=False, notify=True)
+            action = data.get("action")
+            if action == "ghosttransfercleaner_scan":
+                self.__scan(clean=False, notify=True)
+            elif action == "ghosttransfercleaner_diag":
+                # 命令入口不依赖前端页面，即使页面上的按钮出问题也能拿到报告
+                self.__start_diagnose(source="远程命令 /ghostdiag")
         except Exception as err:
             logger.error(f"幽灵整理记录：处理远程命令失败：{err}")
 
@@ -289,7 +332,15 @@ class GhostTransferCleaner(_PluginBase):
                 "methods": ["GET", "POST"],
                 "summary": "生成诊断报告",
                 "description": "抽查整理记录并与本地 strm 目录逐条对照，"
-                               "输出可用于定位「为什么全都对不上」的具体报告",
+                               "输出可用于定位「为什么全都对不上」的具体报告；"
+                               "后台生成，完成后推送到通知渠道",
+            },
+            {
+                "path": f"/{pid}/notify_report",
+                "endpoint": self.api_notify_report,
+                "methods": ["GET", "POST"],
+                "summary": "把诊断报告发送到通知渠道",
+                "description": "将最近一次生成的诊断报告摘要重新推送到 MP 通知渠道",
             },
         ]
 
@@ -338,18 +389,185 @@ class GhostTransferCleaner(_PluginBase):
         }
 
     def api_diagnose(self) -> Dict[str, Any]:
-        """生成诊断报告，用于定位 strm 比对全部落空的原因。"""
-        try:
-            report = self.__diagnose()
-        except Exception as err:
-            logger.error(f"幽灵整理记录：生成诊断报告失败：{err}")
-            return {"success": False, "message": f"生成诊断报告失败：{err}", "data": {}}
-        head = self._report_time or ""
+        """
+        触发生成诊断报告（后台执行，完成后推送到通知渠道）。
+
+        之所以不在接口里同步生成：报告要遍历 strm 目录树，耗时可达几十秒，
+        而前端在请求异常时只会静默关闭进度框、不给任何提示，
+        表现为「点了没反应」。改成后台生成后，接口秒回，
+        结果一律通过通知渠道交付，成功失败都看得见。
+        """
+        started, message = self.__start_diagnose(source="插件数据页面")
+        return {"success": True, "message": message, "data": {"running": started}}
+
+    def api_notify_report(self) -> Dict[str, Any]:
+        """把最近一次生成的诊断报告摘要重新推送到通知渠道。"""
+        if not self._report:
+            return {
+                "success": False,
+                "message": "还没有生成过诊断报告，请先点「生成诊断报告」",
+                "data": {},
+            }
+        self.__send_report(self._report, note="手动重发")
         return {
             "success": True,
-            "message": f"诊断报告已生成（{head}），内容见页面下方「诊断报告」",
-            "data": {"report": report, "report_time": head},
+            "message": "诊断报告已推送到通知渠道",
+            "data": {"report_time": self._report_time, "path": self._report_path},
         }
+
+    def __start_diagnose(self, source: str = "") -> Tuple[bool, str]:
+        """
+        启动一次后台诊断（不阻塞请求，与页面刷新无关）。
+
+        :return (是否成功启动, 给用户看的结果说明)
+        """
+        with self._lock:
+            if self._diagnosing:
+                return False, "诊断报告正在生成中，完成后会推送到通知渠道，请稍候…"
+            self._diagnosing = True
+        logger.info(f"幽灵整理记录：开始生成诊断报告（来源：{source or '未知'}）")
+        threading.Thread(target=self.__diagnose_task, daemon=True).start()
+        return True, (
+            "诊断已开始，正在后台生成（要遍历 strm 目录，可能需要几十秒）。"
+            "完成后会自动推送到通知渠道；稍后刷新本页面即可看到完整报告。"
+        )
+
+    def __diagnose_task(self):
+        """后台生成诊断报告：落盘、写日志，并按配置推送到通知渠道。"""
+        try:
+            try:
+                report = self.__diagnose()
+            except Exception as err:
+                logger.error(f"幽灵整理记录：生成诊断报告失败：{err}")
+                # 前端在接口异常时不给任何提示，失败也必须走通知，
+                # 否则用户端看到的仍然是「点了没反应」
+                self.__notify_text(
+                    "幽灵整理记录 · 诊断报告",
+                    f"生成诊断报告失败：{err}\n"
+                    "请把上面这句报错发给我；若与 strm 根目录有关，"
+                    "请先在插件配置里核对容器内的路径是否正确。",
+                )
+                return
+
+            try:
+                self._report_path = self.__write_report_file(report)
+            except Exception as err:
+                logger.error(f"幽灵整理记录：写出诊断报告文件失败：{err}")
+                self._report_path = ""
+            # 把报告文件路径一并落盘，重启后「重发到通知」仍能给出正确位置
+            self.__save()
+
+            if self._notify_report:
+                self.__send_report(report)
+            else:
+                logger.info("幽灵整理记录：诊断报告已生成（未开启推送，可在页面查看）")
+        finally:
+            # 必须等「落盘 + 推送」全部做完才复位：若在生成报告后立刻复位，
+            # 外部（页面刷新、定时任务、测试）会误以为任务已结束，
+            # 而实际上通知还没发出去。
+            self._diagnosing = False
+
+    def __send_report(self, report: str, note: str = ""):
+        """把诊断报告裁剪成通知能承受的长度发出，并附上完整报告的获取方式。"""
+        if self._report_path:
+            tail = f"完整报告：{self._report_path}"
+        else:
+            tail = "完整报告见 MP 日志（搜「幽灵整理记录｜诊断报告」）"
+        head = f"生成于 {self._report_time or '-'}"
+        if note:
+            head += f"（{note}）"
+        text = f"{head}\n\n{self.__digest_report(report)}\n\n（{tail}）"
+        self.__notify_text("幽灵整理记录 · 诊断报告", text)
+
+    def __digest_report(self, report: str) -> str:
+        """
+        把诊断报告裁剪到通知渠道能承受的长度。
+
+        保留「结论 / 逐条对照（前几条）/ 建议 / 交叉命中」这四节 ——
+        它们才是定位问题真正需要的信息，其余明细留给完整报告。
+
+        顺序即优先级：结论（是什么问题）与逐条对照（证据）放最前，
+        交叉命中放最后，这样短渠道截断时丢的是最不关键的那一段。
+        """
+        blocks: List[Tuple[str, str]] = []
+        # 报告末尾的「报告完 · 耗时…」与结束线不属于任何一节，先摘掉，
+        # 否则会黏在最后一节（建议）的正文后面
+        whole = str(report).split("\n报告完 ·")[0]
+        # 节标题固定是「行首」的【；正文里也会出现【】——例如结论里的
+        # 「这【不是「媒体被删」的特征】」——所以必须锚定行首，
+        # 用裸的 split("【") 会把结论拦腰截断。
+        for chunk in re.split(r"(?m)^【", whole)[1:]:
+            title, _, body = chunk.partition("】")
+            blocks.append((title.strip(), body.strip("\n")))
+
+        def pick(keyword: str) -> Tuple[str, str]:
+            for title, body in blocks:
+                if keyword in title:
+                    return title, body
+            return "", ""
+
+        parts: List[str] = []
+        for keyword in ("结论", "逐条对照", "建议", "交叉命中"):
+            title, body = pick(keyword)
+            if not title:
+                continue
+            if keyword == "逐条对照":
+                body = self.__trim_items(body)
+            parts.append(f"【{title}】\n{body}")
+
+        text = "\n\n".join(parts) if parts else str(report)
+        if len(text) > NOTIFY_LIMIT:
+            # 按行截断，避免把某一行切成半句
+            clipped = text[:NOTIFY_LIMIT]
+            cut = clipped.rfind("\n")
+            if cut > NOTIFY_LIMIT // 2:
+                clipped = clipped[:cut]
+            text = clipped.rstrip() + "\n…（通知已截断，完整内容见下方说明）"
+        return text
+
+    @staticmethod
+    def __trim_items(body: str, count: int = NOTIFY_ITEMS) -> str:
+        """逐条对照只保留前几条 —— 它们在通知里最有价值，篇幅也最省。"""
+        matches = list(re.finditer(r"(?m)^  \[(\d+)\] ", body))
+        if len(matches) <= count:
+            return body
+        end = matches[count].start()
+        return body[:end].rstrip() + f"\n  …（其余 {len(matches) - count} 条见完整报告）"
+
+    def __report_dir(self) -> str:
+        """
+        完整报告的存放目录。
+
+        优先使用 MoviePilot 提供的数据目录（若该版本提供），
+        其次退化为插件自身目录 —— 两种位置用户都能直接找到文件。
+        """
+        if self._report_dir_override:
+            return self._report_dir_override
+        getter = getattr(self, "get_data_path", None)
+        if callable(getter):
+            try:
+                path = str(getter() or "").strip()
+                if path:
+                    return path
+            except Exception as err:
+                logger.debug(f"幽灵整理记录：获取插件数据目录失败，改用插件目录：{err}")
+        return os.path.dirname(os.path.abspath(__file__))
+
+    def __write_report_file(self, report: str) -> str:
+        """把完整报告写到磁盘，便于用户直接取阅（失败不影响其它流程）。"""
+        directory = self.__report_dir()
+        os.makedirs(directory, exist_ok=True)
+        path = os.path.join(directory, REPORT_FILENAME)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(report)
+        return path
+
+    def __notify_text(self, title: str, text: str):
+        """通过 MP 通知渠道发送一条纯文本消息。"""
+        try:
+            self.systemmessage.put(str(text), title=title)
+        except Exception as err:
+            logger.error(f"幽灵整理记录：发送通知失败：{err}")
 
     # ------------------------------------------------------------------
     # 定时服务
@@ -451,6 +669,19 @@ class GhostTransferCleaner(_PluginBase):
                                     {
                                         "component": "VSwitch",
                                         "props": {"model": "notify", "label": "扫描后发送通知"},
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "notify_report",
+                                            "label": "诊断报告生成后发送到通知渠道",
+                                        },
                                     }
                                 ],
                             },
@@ -618,6 +849,7 @@ class GhostTransferCleaner(_PluginBase):
         ], {
             "enabled": False,
             "notify": True,
+            "notify_report": True,
             "strm_paths": "",
             "path_map": "",
             "check_files": False,
@@ -769,6 +1001,22 @@ class GhostTransferCleaner(_PluginBase):
                                     "click": {"api": f"/plugin/{pid}/diagnose", "method": "POST"}
                                 },
                             },
+                            {
+                                "component": "VBtn",
+                                "props": {
+                                    "color": "secondary",
+                                    "variant": "tonal",
+                                    "size": "small",
+                                    "prepend-icon": "mdi-bell-send",
+                                },
+                                "text": "把报告发到通知",
+                                "events": {
+                                    "click": {
+                                        "api": f"/plugin/{pid}/notify_report",
+                                        "method": "POST",
+                                    }
+                                },
+                            },
                         ],
                     }
                 ],
@@ -785,7 +1033,8 @@ class GhostTransferCleaner(_PluginBase):
                         "text": f"诊断报告（生成于 {self._report_time or '-'}）："
                                 "把整理记录里的路径与 strm 库里的实际目录逐条摆在一起对照，"
                                 "用于判断到底是「文件真被删」还是「目录配置/结构对不上」。"
-                                "报告只读本地文件系统，不访问云端；文本可长按选择复制。",
+                                "报告只读本地文件系统，不访问云端；文本可长按选择复制。"
+                                + (f"完整报告已写入：{self._report_path}" if self._report_path else ""),
                     },
                 }
             )
@@ -1946,7 +2195,7 @@ class GhostTransferCleaner(_PluginBase):
                 lines.append("⚠️ 超八成记录都找不到对应 strm，疑似 strm 根目录配置有误，已中止清理，请先核对配置。")
             if stats.get("truncated"):
                 lines.append("⚠️ 本次扫描超时提前结束，结果可能不完整。")
-            self.systemmessage.put("\n".join(lines), title="幽灵整理记录")
+            self.__notify_text("幽灵整理记录", "\n".join(lines))
         except Exception as err:
             logger.error(f"幽灵整理记录：发送通知失败：{err}")
 
@@ -1959,6 +2208,7 @@ class GhostTransferCleaner(_PluginBase):
         if isinstance(stored, dict):
             self._report = str(stored.get("report") or "")
             self._report_time = str(stored.get("report_time") or "")
+            self._report_path = str(stored.get("report_path") or "")
             ghosts = stored.get("ghosts")
             stats = stored.get("stats")
             if isinstance(stats, dict) and stats.get("engine") == ENGINE_VERSION:
@@ -1979,6 +2229,7 @@ class GhostTransferCleaner(_PluginBase):
                     "stats": self._stats,
                     "report": self._report,
                     "report_time": self._report_time,
+                    "report_path": self._report_path,
                 },
             )
         except Exception as err:
