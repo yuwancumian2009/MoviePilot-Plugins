@@ -31,6 +31,14 @@ MoviePilot 在整理入库成功后会写入一条「整理记录」（transferh
 - 局部缺失：节目目录还在，但该文件对应的 strm 不存在 —— 可能只是删了
   其中几集，也可能是记录已过时，需要人工确认后再清理。
 
+诊断报告
+--------
+只给汇总数字（「发现 N 条幽灵记录」）无法回答「为什么全都对不上」。
+数据页面提供「生成诊断报告」：抽一小批整理记录逐条展开，把
+「记录里的路径」与「strm 库里的实际目录」摆在一起对照，并给出
+strm 根目录体检结果、记录侧路径画像、交叉命中率与整改建议。
+报告只读本地文件系统，同样不访问云端。
+
 安全设计
 --------
 1. **绝不访问云端 / 远端存储**：不做任何 115、WebDAV、存储链（StorageChain）
@@ -45,6 +53,7 @@ import json
 import os
 import threading
 import time
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -67,6 +76,14 @@ LEVEL_TEXT = {
 STATE_OK = "ok"
 STATE_UNKNOWN = "unknown"
 
+# 诊断报告里的比对结论文案（比扫描分级多出「正常」「无法判断」两种）
+PROBE_TEXT = {
+    STATE_OK: "正常 —— 该路径对应的 strm 仍在库中",
+    LEVEL_PART: "局部缺失 —— 节目目录还在，但该文件对应的 strm 不在",
+    LEVEL_WHOLE: "整部缺失 —— strm 库里连该节目目录都找不到",
+    STATE_UNKNOWN: "无法判断 —— 记录里没有可用的目标路径",
+}
+
 # strm 扩展名
 STRM_SUFFIX = ".strm"
 # 判定引擎版本：本地 strm 比对（1=旧的存储层查询）
@@ -86,6 +103,22 @@ MAX_TAIL_DEPTH = 8
 # 目录内容缓存的最大条目数
 DIR_CACHE_LIMIT = 20000
 
+# ---- 诊断报告参数 ----
+# 报告中逐条对照的样例条数
+DIAG_SAMPLE = 12
+# 每个根目录在报告里展示的顶层条目数
+DIAG_ROOT_TOP = 20
+# 反查目录时展示单个目录内的条目数
+DIAG_PEEK = 8
+# 每条记录在每个根目录下最多记录的尝试层级数
+DIAG_MAX_ATTEMPTS = 6
+# 建立「目录名索引」时遍历的最大深度与最大节点数
+DIAG_INDEX_DEPTH = 3
+DIAG_INDEX_LIMIT = 4000
+# 统计 .strm 时遍历的最大节点数与最长耗时（秒）
+DIAG_WALK_LIMIT = 40000
+DIAG_WALK_SECONDS = 8
+
 
 class GhostTransferCleaner(_PluginBase):
     """幽灵整理记录：体检并清理「整理记录还在、媒体文件已丢失」的记录。"""
@@ -97,7 +130,7 @@ class GhostTransferCleaner(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
     # 插件版本
-    plugin_version = "1.1.0"
+    plugin_version = "1.2.0"
     # 插件作者
     plugin_author = "呵呵"
     # 作者主页
@@ -125,6 +158,8 @@ class GhostTransferCleaner(_PluginBase):
     # ---- 运行状态 ----
     _ghosts: List[Dict[str, Any]] = []
     _stats: Dict[str, Any] = {}
+    _report: str = ""
+    _report_time: str = ""
     _scanning = False
     _lock = threading.Lock()
     # 目录内容缓存：{目录绝对路径: {小写名称: 是否目录}}，None 表示该目录不可访问
@@ -148,6 +183,8 @@ class GhostTransferCleaner(_PluginBase):
         self._max_records = 5000
         self._cron = ""
         self._dir_cache = {}
+        self._report = ""
+        self._report_time = ""
 
         scan_now = False
         clean_now = False
@@ -246,6 +283,14 @@ class GhostTransferCleaner(_PluginBase):
                 "summary": "清理幽灵整理记录",
                 "description": "删除扫描到的幽灵整理记录（需先在插件配置中开启「允许一键清理」）",
             },
+            {
+                "path": f"/{pid}/diagnose",
+                "endpoint": self.api_diagnose,
+                "methods": ["GET", "POST"],
+                "summary": "生成诊断报告",
+                "description": "抽查整理记录并与本地 strm 目录逐条对照，"
+                               "输出可用于定位「为什么全都对不上」的具体报告",
+            },
         ]
 
     def api_status(self) -> Dict[str, Any]:
@@ -290,6 +335,20 @@ class GhostTransferCleaner(_PluginBase):
             "success": True,
             "message": stats.get("last_action") or "清理完成",
             "data": stats,
+        }
+
+    def api_diagnose(self) -> Dict[str, Any]:
+        """生成诊断报告，用于定位 strm 比对全部落空的原因。"""
+        try:
+            report = self.__diagnose()
+        except Exception as err:
+            logger.error(f"幽灵整理记录：生成诊断报告失败：{err}")
+            return {"success": False, "message": f"生成诊断报告失败：{err}", "data": {}}
+        head = self._report_time or ""
+        return {
+            "success": True,
+            "message": f"诊断报告已生成（{head}），内容见页面下方「诊断报告」",
+            "data": {"report": report, "report_time": head},
         }
 
     # ------------------------------------------------------------------
@@ -669,7 +728,7 @@ class GhostTransferCleaner(_PluginBase):
                 "content": [
                     {
                         "component": "VCol",
-                        "props": {"cols": 12, "class": "d-flex ga-2 mb-2"},
+                        "props": {"cols": 12, "class": "d-flex flex-wrap ga-2 mb-2"},
                         "content": [
                             {
                                 "component": "VBtn",
@@ -697,11 +756,53 @@ class GhostTransferCleaner(_PluginBase):
                                     "click": {"api": f"/plugin/{pid}/clean", "method": "POST"}
                                 },
                             },
+                            {
+                                "component": "VBtn",
+                                "props": {
+                                    "color": "info",
+                                    "variant": "tonal",
+                                    "size": "small",
+                                    "prepend-icon": "mdi-clipboard-text-search",
+                                },
+                                "text": "生成诊断报告",
+                                "events": {
+                                    "click": {"api": f"/plugin/{pid}/diagnose", "method": "POST"}
+                                },
+                            },
                         ],
                     }
                 ],
             }
         )
+
+        if self._report:
+            content.append(
+                {
+                    "component": "VAlert",
+                    "props": {
+                        "type": "info",
+                        "variant": "tonal",
+                        "text": f"诊断报告（生成于 {self._report_time or '-'}）："
+                                "把整理记录里的路径与 strm 库里的实际目录逐条摆在一起对照，"
+                                "用于判断到底是「文件真被删」还是「目录配置/结构对不上」。"
+                                "报告只读本地文件系统，不访问云端；文本可长按选择复制。",
+                    },
+                }
+            )
+            content.append(
+                {
+                    "component": "VCard",
+                    "props": {
+                        "variant": "outlined",
+                        "class": "pa-3",
+                        "style": "white-space: pre-wrap; word-break: break-all;"
+                                 " font-family: ui-monospace, Consolas, 'Courier New', monospace;"
+                                 " font-size: 12px; line-height: 1.5;"
+                                 " max-height: 50vh; overflow: auto;",
+                    },
+                    "text": self._report,
+                }
+            )
 
         items = []
         for ghost in ghosts[:PAGE_LIMIT]:
@@ -1126,6 +1227,592 @@ class GhostTransferCleaner(_PluginBase):
         return result
 
     # ------------------------------------------------------------------
+    # 诊断报告（只读本地文件系统，同样不访问云端）
+    # ------------------------------------------------------------------
+    def __diagnose(self) -> str:
+        """
+        生成诊断报告。
+
+        汇总数字回答不了「为什么这么多记录都找不到对应 strm」，所以报告的做法是
+        抽一小批整理记录逐条展开，把「记录里的路径」与「strm 库里的实际目录」
+        摆在一起对照，再给出根目录体检、路径画像、交叉命中率与整改建议。
+        """
+        started = time.time()
+        root_infos = [self.__inspect_root(root) for root in self._strm_paths]
+
+        rows: List[Dict[str, Any]] = []
+        total = 0
+        load_error = ""
+        if self._strm_paths:
+            try:
+                rows, total = self.__load_records()
+            except Exception as err:  # 数据库不可用时也要能出报告
+                load_error = str(err)
+                logger.error(f"幽灵整理记录：诊断报告读取整理记录失败：{err}")
+
+        sample = self.__sample(rows, DIAG_SAMPLE)
+
+        # ---- 记录侧画像 ----
+        top_counter: Counter = Counter()
+        ext_counter: Counter = Counter()
+        for row in rows:
+            normalized = self.__normalize(self.__first_dest(row))
+            if not normalized:
+                continue
+            top_counter[self.__top_segment(normalized)] += 1
+            ext_counter[self.__ext_of(normalized)] += 1
+
+        # ---- 逐条对照 ----
+        traces = [self.__trace(self.__first_dest(row), root_infos) for row in sample]
+
+        # ---- 交叉命中统计 ----
+        strm_index: Dict[str, List[str]] = {}
+        for root_info in root_infos:
+            for key, places in root_info["strm_index"].items():
+                bucket = strm_index.setdefault(key, [])
+                for place in places:
+                    if len(bucket) < 3:
+                        bucket.append(f"{root_info['path']}/{place}")
+        dir_index: Dict[str, List[str]] = {}
+        for root_info in root_infos:
+            for key, places in root_info["index"].items():
+                bucket = dir_index.setdefault(key, [])
+                for place in places:
+                    if len(bucket) < 3:
+                        bucket.append(f"{root_info['path']}/{place}")
+
+        name_hit = 0
+        dir_hit = 0
+        for trace in traces:
+            if not trace["segments"]:
+                continue
+            if any(name.lower() in strm_index for name in trace["names"]):
+                name_hit += 1
+            parents = trace["segments"][:-1]
+            if parents and parents[-1].lower() in dir_index:
+                dir_hit += 1
+
+        root_tops = []
+        for root_info in root_infos:
+            if root_info["isdir"]:
+                root_tops.extend(
+                    name for name, is_dir in root_info["top"] if is_dir
+                )
+        root_top_keys = {name.lower() for name in root_tops}
+        record_top_keys = {name.lower() for name in top_counter}
+        overlap = sorted(root_top_keys & record_top_keys)
+
+        # ---- 组装报告 ----
+        lines: List[str] = []
+        add = lines.append
+
+        def section(title: str):
+            add("")
+            add(f"【{title}】")
+
+        def bullet(text: str, indent: int = 1):
+            add("  " * indent + "· " + text)
+
+        add("=" * 72)
+        add("幽灵整理记录 · 诊断报告")
+        add(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        add(
+            f"插件版本：{self.plugin_version}    判定引擎：v{ENGINE_VERSION}"
+            "（只比对 NAS 本地 strm 文件，不访问云端）"
+        )
+        add("=" * 72)
+
+        # 一、结论
+        section("一、结论（先看这里）")
+        if not self._strm_paths:
+            bullet("根因明确：尚未配置「strm 媒体库根目录」，插件不给出任何判定。")
+            bullet("请先到插件配置里填写容器内的 strm 根目录（例如 /media/strm）再扫描。")
+        elif not any(info["isdir"] for info in root_infos):
+            bullet("根因明确：配置的 strm 根目录在容器内不存在或不是目录。")
+            for info in root_infos:
+                bullet(f"不可访问：{info['path']}", indent=2)
+            bullet("请核对容器挂载（docker-compose 的 volumes / bind 路径），"
+                   "确认该路径在 MoviePilot 容器里真的存在。")
+        elif not rows:
+            bullet("没有读到符合条件的整理记录，无法进一步分析。"
+                   "请检查「只检查 N 天前」与「单次最多检查记录数」的设置。")
+        elif len(traces) and name_hit == 0 and dir_hit == 0:
+            bullet(
+                f"抽查 {len(traces)} 条记录中，文件名的同名 strm 命中 {name_hit} 条、"
+                f"末级目录名命中 {dir_hit} 条 —— 两边几乎毫无交集。"
+            )
+            bullet("这【不是「媒体被删」的特征】，更像是：strm 根目录填到了别的目录，"
+                   "或整理记录指向的媒体库与这个 strm 库根本不是同一套。")
+            bullet("在核对清楚之前，请不要点「清理幽灵记录」。")
+        elif len(traces) and name_hit == 0:
+            bullet(
+                f"抽查 {len(traces)} 条中，末级目录名命中 {dir_hit} 条、"
+                f"但没有任何一条的文件名能在 strm 库里找到同名 strm（命中 {name_hit} 条）。"
+            )
+            bullet("目录结构大致能对上，所以先别急着下结论：可能是这些 strm 真的不在了，"
+                   "也可能是 strm 的命名规则与整理记录不同"
+                   "（例如多了清晰度/来源后缀、季集写法不一样）。")
+            bullet("请到「五、逐条对照」逐条看「该目录内含」列出的真实文件名，与记录里的文件名对照，"
+                   "差异会直接暴露出来；确认清楚之前不要点「清理幽灵记录」。")
+        else:
+            bullet(
+                f"抽查 {len(traces)} 条中，文件名命中 {name_hit} 条、末级目录名命中 {dir_hit} 条，"
+                "路径结构与本地 strm 库基本能对上。"
+            )
+            bullet("此时「幽灵记录」才比较可能是真的被删了。仍建议先按「五、逐条对照」人工确认几条再清理。")
+
+        # 二、配置快照
+        section("二、配置快照")
+        bullet(f"插件启用：{'是' if self._enabled else '否'}")
+        bullet(f"strm 媒体库根目录：{len(self._strm_paths)} 个")
+        for index, root in enumerate(self._strm_paths, 1):
+            bullet(f"[{index}] {root}", indent=2)
+        if not self._strm_paths:
+            bullet("（空 —— 这是当前唯一且最可能的根因）", indent=2)
+        bullet(
+            f"路径前缀映射：{len(self._path_map)} 条"
+            + ("（未配置）" if not self._path_map else "")
+        )
+        for old, new in self._path_map:
+            bullet(f"{old}  =>  {new}", indent=2)
+        bullet(f"单次最多检查记录数：{self._max_records}")
+        bullet(f"只检查 N 天前的记录：{self._min_age_days}（0 表示全部）")
+        bullet(f"深度检查（逐个文件核对 strm）：{'开' if self._check_files else '关'}")
+        bullet(f"只清理「整部缺失」：{'是' if self._only_whole else '否'}")
+        bullet(f"允许一键清理：{'是' if self._allow_clean else '否'}")
+        bullet(f"定时扫描 cron：{self._cron or '（未设置）'}")
+        if self._stats:
+            bullet(
+                f"最近一次扫描：{self._stats.get('scan_time', '-')}｜"
+                f"检查 {self._stats.get('scanned', 0)} 条｜"
+                f"幽灵 {self._stats.get('ghost', 0)} 条"
+                f"（整部 {self._stats.get('whole', 0)}、局部 {self._stats.get('part', 0)}）"
+            )
+            if self._stats.get("suspicious"):
+                bullet("最近一次扫描触发了「占比过高」保护，已自动禁止清理。")
+
+        # 三、strm 媒体库体检
+        section("三、strm 媒体库体检")
+        if not root_infos:
+            bullet("未配置根目录，跳过。")
+        for index, info in enumerate(root_infos, 1):
+            add(f"  [{index}] {info['path']}")
+            if not info["isdir"]:
+                add("      · 是否目录：否 —— 容器内不存在或不可读！")
+                continue
+            dirs = [name for name, is_dir in info["top"] if is_dir]
+            files = [name for name, is_dir in info["top"] if not is_dir]
+            add("      · 是否目录：是")
+            add(
+                f"      · 顶层条目 {len(info['top'])} 个"
+                f"（目录 {len(dirs)} / 文件 {len(files)}，最多展示 {DIAG_ROOT_TOP} 个）："
+            )
+            for name, is_dir in info["top"][:DIAG_ROOT_TOP]:
+                add(f"          [{'目录' if is_dir else '文件'}] {name}")
+            if len(info["top"]) > DIAG_ROOT_TOP:
+                add(f"          …（其余 {len(info['top']) - DIAG_ROOT_TOP} 个省略）")
+            add(
+                f"      · 目录名索引：{info['index_nodes']} 个目录"
+                f"（深度 ≤ {DIAG_INDEX_DEPTH}）"
+                + ("，已达上限提前结束" if info["index_truncated"] else "")
+            )
+            add(
+                f"      · .strm 文件计数：{info['strm_count']} 个"
+                + ("（遍历超限提前结束，实际更多）" if info["walk_truncated"] else "")
+            )
+
+        # 四、整理记录侧画像
+        section("四、整理记录侧画像")
+        if load_error:
+            bullet(f"读取整理记录失败：{load_error}")
+        else:
+            bullet(f"符合条件的整理记录共 {total} 条，本次读取 {len(rows)} 条，抽查 {len(traces)} 条")
+            bullet("目标路径（dest）顶层目录分布（最多 10 项）：")
+            if top_counter:
+                for name, count in top_counter.most_common(10):
+                    add(f"          {count:>6} 次     {name}")
+            else:
+                add("          （无可用路径）")
+            bullet("目标文件名扩展名分布（最多 10 项）：")
+            if ext_counter:
+                for name, count in ext_counter.most_common(10):
+                    add(f"          {count:>6} 次     {name}")
+            else:
+                add("          （无可用路径）")
+
+        # 五、逐条对照
+        section(f"五、逐条对照（抽查 {len(traces)} 条）")
+        if not traces:
+            bullet("没有可对照的记录。")
+        for index, trace in enumerate(traces, 1):
+            row = sample[index - 1]
+            label = " ".join(
+                part for part in [
+                    str(row.get("title") or ""),
+                    str(row.get("year") or ""),
+                    f"{row.get('seasons') or ''}{row.get('episodes') or ''}".strip(),
+                ] if part
+            )
+            add("")
+            add(f"  [{index}] #{row.get('id')} {label or '（无标题）'}")
+            add(f"      整理时间：{row.get('date') or '-'}    类型：{row.get('type') or '-'}")
+            add(f"      本路径比对：{PROBE_TEXT.get(trace['level'], '未知状态')}")
+            add(f"      记录目标路径（原样）：{trace['raw'] or '（空）'}")
+            if trace["normalized"] != trace["raw"]:
+                add(f"      归一化（应用前缀映射后）：{trace['normalized']}")
+            if not trace["segments"]:
+                add("      该记录没有可用的目标路径，已跳过比对（也不会据此判为幽灵）")
+                continue
+            add(f"      文件名候选：{'、'.join(trace['names']) or '（无）'}")
+            for unit in trace["roots"]:
+                add(f"      在 {unit['root']} 下逐级剥离前导目录尝试：")
+                if not unit["levels"]:
+                    add("          （无可尝试的层级）")
+                for level in unit["levels"]:
+                    # 根目录本身必然存在，三、体检区已列出内容，逐条重复没有信息量
+                    if not level["rel"] and not level["hit"]:
+                        continue
+                    rel = level["rel"] or "（根目录）"
+                    if level["hit"] and level["hit_is_dir"]:
+                        add(f"          ● {rel}/{level['hit']}    命中一个同名「目录」"
+                            "（记录指向的是目录本身，不是文件）")
+                    elif level["hit"]:
+                        add(f"          ✓ {rel}/{level['hit']}    ← 命中对应 strm")
+                    elif level["dir_ok"]:
+                        peek = "、".join(level["peek"]) or "（空目录）"
+                        add(f"          ✗ {rel}/…    目录存在，但没找到对应文件；"
+                            f"该目录实际内含：{peek}")
+                    else:
+                        add(f"          ✗ {rel}/…    该层级目录不存在")
+                if unit["repeat"]:
+                    add(f"          …（更深层级已省略 {unit['repeat']} 次尝试）")
+            hits = self.__dir_hits(trace["segments"][:-1], dir_index)
+            if hits:
+                add("      记录里的目录名在 strm 库中的落点（最能说明问题）：")
+                for hit in hits:
+                    if hit["places"]:
+                        add(f"          「{hit['name']}」→ 命中 {len(hit['places'])} 处："
+                            + "、".join(hit["places"]))
+                    else:
+                        add(f"          「{hit['name']}」→ strm 库中不存在同名目录")
+
+        # 六、交叉命中统计
+        section("六、交叉命中统计")
+        bullet(
+            f"抽查 {len(traces)} 条中：文件名同名 strm 命中 {name_hit} 条、"
+            f"末级目录名命中 {dir_hit} 条"
+        )
+        bullet("记录里的顶层目录（最多 10 项）：" + ("、".join(
+            name for name, _ in top_counter.most_common(10)) or "（无）"))
+        bullet("strm 库的顶层目录（最多 10 项）：" + ("、".join(root_tops[:10]) or "（无）"))
+        bullet(
+            "两边顶层目录的交集：" + ("、".join(overlap) if overlap else "无 —— 完全不重合")
+        )
+
+        # 七、建议
+        section("七、建议")
+        suggestions: List[str] = []
+        if not self._strm_paths:
+            suggestions.append(
+                "1. 到插件配置填写「strm 媒体库根目录」（容器内路径，例如 /media/strm），保存后再扫描。"
+            )
+        elif not any(info["isdir"] for info in root_infos):
+            suggestions.append(
+                "1. 上面标注「是否目录：否」的路径在容器内不可见。"
+                "请检查 MoviePilot 容器的挂载配置，把 strm 所在目录映射进容器。"
+            )
+        else:
+            if len(traces) and name_hit == 0 and dir_hit == 0:
+                suggestions.append(
+                    "文件名与目录名都命中不了，先不要清理。请把「三、strm 媒体库体检」里列出的顶层目录，"
+                    "与你印象中的媒体库结构核对一遍，确认这个根目录就是 strm 库本身"
+                    "（常见的错法：填成了上级目录、或填成了下载目录）。"
+                )
+                suggestions.append(
+                    "若记录的 dest 前几级是云端/下载器路径（如 /115、/我的资源），"
+                    "而本地 strm 库的顶层是「电影、电视剧」这一类，请用「路径前缀映射」"
+                    "把记录前缀改写到本地前缀，例如填一行：  /115=/media/strm"
+                )
+                suggestions.append(
+                    "若确认两套库确实对不上（例如 strm 是另一台机器生成的），"
+                    "说明本插件在当前配置下无法判断，此时不要使用清理功能。"
+                )
+            elif len(traces) and name_hit == 0:
+                suggestions.append(
+                    "目录能对上、文件名对不上。请把「五、逐条对照」里的「记录目标路径」与"
+                    "「该目录实际内含」两份文件名并排看，差异通常落在：清晰度/来源后缀、"
+                    "季集写法（S01E01 / 第01集 / EP01）、是否带年份，或多出一层点号。"
+                )
+                suggestions.append(
+                    "若确认只是命名规则不同，说明本插件的「后缀匹配」不适配你的命名，"
+                    "此时不要使用清理功能（会误删仍然有效的记录）。"
+                )
+            else:
+                suggestions.append(
+                    "抽查结果说明路径结构基本能对上，此时「幽灵记录」的可信度较高；"
+                    "但仍建议先按「五、逐条对照」人工确认几条，再开启清理。"
+                )
+
+        # 与根因无关的通用建议
+        if self._strm_paths and any(info["isdir"] for info in root_infos):
+            suggestions.append(
+                "需要缩小范围时，可把「单次最多检查记录数」调小（例如 200）后重扫，"
+                "先看小样本结论，确认无误再放大范围。"
+            )
+            if not self._only_whole:
+                suggestions.append(
+                    "当前「只清理整部缺失」是关闭的，清理会同时删掉「局部缺失」的记录，"
+                    "建议先打开该开关，只清理可信度最高的那部分。"
+                )
+
+        if not suggestions:
+            add("  （暂无）")
+        for number, item in enumerate(suggestions, 1):
+            add(f"  {number}. {item}")
+
+        add("")
+        add(
+            f"报告完 · 生成耗时 {round(time.time() - started, 1)} 秒 · "
+            f"本报告只读取本地文件系统与整理记录，未访问任何云端接口"
+        )
+        add("=" * 72)
+
+        report = "\n".join(lines)
+
+        # 落盘 + 写日志，便于在 MP 日志里取全文（作为一条记录，不刷屏）
+        self._report = report
+        self._report_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.__save()
+        try:
+            logger.info(f"幽灵整理记录｜诊断报告｜{self._report_time}\n{report}")
+        except Exception as err:
+            logger.error(f"幽灵整理记录：输出诊断报告到日志失败：{err}")
+        return report
+
+    def __inspect_root(self, root: str) -> Dict[str, Any]:
+        """体检一个 strm 根目录：是否存在、顶层结构、目录名索引与 .strm 计数。"""
+        info: Dict[str, Any] = {
+            "path": root,
+            "isdir": False,
+            "top": [],
+            "index": {},
+            "index_nodes": 0,
+            "index_truncated": False,
+            "strm_index": {},
+            "strm_count": 0,
+            "walk_truncated": False,
+        }
+        top = self.__list_named(root)
+        if top is None:
+            return info
+        info["isdir"] = True
+        info["top"] = top
+
+        index, nodes, truncated = self.__index_dirs(root)
+        info["index"] = index
+        info["index_nodes"] = nodes
+        info["index_truncated"] = truncated
+
+        count, strm_index, walk_truncated = self.__walk_strm(root)
+        info["strm_count"] = count
+        info["strm_index"] = strm_index
+        info["walk_truncated"] = walk_truncated
+        return info
+
+    def __index_dirs(self, root: str) -> Tuple[Dict[str, List[str]], int, bool]:
+        """
+        建立「目录名（小写） → 相对路径列表」索引。
+
+        用于反查「整理记录里的某一级目录名」在 strm 库里究竟落在哪里，
+        这是判断「目录结构是否对得上」最直接的证据。
+
+        :return (索引, 已遍历目录数, 是否因超限提前结束)
+        """
+        index: Dict[str, List[str]] = {}
+        nodes = 0
+        queue: List[Tuple[str, int]] = [("", 0)]
+        while queue:
+            relative, depth = queue.pop(0)
+            entries = self.__list_named(
+                self.__join(root, [seg for seg in relative.split("/") if seg])
+            )
+            if entries is None:
+                continue
+            for name, is_dir in entries:
+                if not is_dir:
+                    continue
+                nodes += 1
+                if nodes > DIAG_INDEX_LIMIT:
+                    return index, nodes, True
+                child = f"{relative}/{name}" if relative else name
+                bucket = index.setdefault(name.lower(), [])
+                if len(bucket) < 3:
+                    bucket.append(child)
+                if depth + 1 < DIAG_INDEX_DEPTH:
+                    queue.append((child, depth + 1))
+        return index, nodes, False
+
+    def __walk_strm(self, root: str) -> Tuple[int, Dict[str, List[str]], bool]:
+        """
+        遍历 strm 根目录，统计 .strm 数量并建立「文件名（小写） → 相对路径」索引。
+
+        索引让我们能回答「这条记录对应的 strm 到底在不在库里、在哪儿」，
+        比只看目标目录是否命中有用得多。
+
+        :return (.strm 数量, 文件名索引, 是否因超限提前结束)
+        """
+        count = 0
+        index: Dict[str, List[str]] = {}
+        nodes = 0
+        deadline = time.time() + DIAG_WALK_SECONDS
+        stack: List[str] = [""]
+        while stack:
+            relative = stack.pop()
+            entries = self.__list_named(
+                self.__join(root, [seg for seg in relative.split("/") if seg])
+            )
+            if entries is None:
+                continue
+            for name, is_dir in entries:
+                nodes += 1
+                if nodes > DIAG_WALK_LIMIT or time.time() > deadline:
+                    return count, index, True
+                child = f"{relative}/{name}" if relative else name
+                if is_dir:
+                    stack.append(child)
+                    continue
+                if name.lower().endswith(STRM_SUFFIX):
+                    count += 1
+                    bucket = index.setdefault(name.lower(), [])
+                    if len(bucket) < 3:
+                        bucket.append(child)
+        return count, index, False
+
+    def __trace(self, path: str, root_infos: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        记录一条整理记录路径在 strm 库中的查找过程，供诊断报告展示。
+
+        判定结果直接取 ``__probe_strm``，这里只负责把「试过哪些相对路径、
+        每个层级目录是否存在、目录里实际有什么」如实记下来，二者永远一致。
+        """
+        normalized = self.__normalize(path)
+        segments = [seg for seg in normalized.split("/") if seg]
+        trace: Dict[str, Any] = {
+            "raw": str(path or ""),
+            "normalized": normalized,
+            "segments": segments,
+            "names": [],
+            "roots": [],
+            "level": STATE_UNKNOWN,
+        }
+        if not segments:
+            return trace
+
+        names = self.__strm_names(segments[-1])
+        dirs = segments[:-1]
+        trace["names"] = names
+        trace["level"] = self.__probe_strm(path)
+
+        for root_info in root_infos:
+            root = root_info["path"]
+            levels: List[Dict[str, Any]] = []
+            repeat = 0
+            for drop in range(0, min(len(dirs), MAX_TAIL_DEPTH) + 1):
+                if len(levels) >= DIAG_MAX_ATTEMPTS:
+                    repeat = min(len(dirs), MAX_TAIL_DEPTH) + 1 - len(levels)
+                    break
+                tail = dirs[drop:]
+                entries = self.__list_named(self.__join(root, tail))
+                item: Dict[str, Any] = {
+                    "rel": "/".join(tail),
+                    "dir_ok": entries is not None,
+                    "hit": "",
+                    "hit_is_dir": False,
+                    "peek": [],
+                }
+                if entries is not None:
+                    lookup = {name.lower(): (name, is_dir) for name, is_dir in entries}
+                    for candidate in names:
+                        found = lookup.get(candidate.lower())
+                        if found is not None:
+                            item["hit"] = found[0]
+                            item["hit_is_dir"] = bool(found[1])
+                            break
+                    if not item["hit"]:
+                        item["peek"] = [name for name, _ in entries[:DIAG_PEEK]]
+                levels.append(item)
+                if item["hit"]:
+                    break
+            trace["roots"].append({"root": root, "levels": levels, "repeat": repeat})
+        return trace
+
+    def __dir_hits(self, dirs: List[str], dir_index: Dict[str, List[str]]) -> List[Dict[str, Any]]:
+        """反查记录里最后几级目录名在 strm 库中的落点（最深一级优先）。"""
+        result: List[Dict[str, Any]] = []
+        for segment in reversed([seg for seg in dirs if seg][-4:]):
+            result.append(
+                {"name": segment, "places": list(dir_index.get(segment.lower(), [])[:3])}
+            )
+        return result
+
+    def __list_named(self, directory: str) -> Optional[List[Tuple[str, bool]]]:
+        """
+        列出目录内容并保留原始大小写，供诊断报告展示；不写入扫描缓存。
+        目录不存在、不可读或不是目录时返回 None。
+        """
+        try:
+            if not os.path.isdir(directory):
+                return None
+            result: List[Tuple[str, bool]] = []
+            with os.scandir(directory) as iterator:
+                for item in iterator:
+                    try:
+                        result.append((item.name, item.is_dir()))
+                    except OSError:
+                        continue
+            result.sort(key=lambda pair: (not pair[1], pair[0].lower()))
+            return result
+        except OSError as err:
+            logger.debug(f"幽灵整理记录：诊断时读取目录 {directory} 失败：{err}")
+            return None
+
+    @staticmethod
+    def __sample(rows: List[Dict[str, Any]], count: int) -> List[Dict[str, Any]]:
+        """在记录集合上等距抽样，避免只看到最旧或最新的那几条。"""
+        if count <= 0:
+            return []
+        if len(rows) <= count:
+            return list(rows)
+        step = len(rows) / float(count)
+        return [rows[min(int(index * step), len(rows) - 1)] for index in range(count)]
+
+    @staticmethod
+    def __first_dest(row: Dict[str, Any]) -> str:
+        """取整理记录目标路径中的第一条（dest 可能是多行）。"""
+        raw = row.get("dest") or ""
+        for line in str(raw).replace("\r", "\n").split("\n"):
+            if line.strip():
+                return line.strip()
+        return ""
+
+    @staticmethod
+    def __top_segment(normalized: str) -> str:
+        """取归一化路径的顶层目录名，用于统计路径画像。"""
+        segments = [seg for seg in str(normalized).split("/") if seg]
+        return segments[0] if segments else "(空)"
+
+    @staticmethod
+    def __ext_of(normalized: str) -> str:
+        """取路径中文件名的扩展名（小写），无扩展名时返回「(无扩展名)」。"""
+        segments = [seg for seg in str(normalized).split("/") if seg]
+        if not segments:
+            return "(空)"
+        name = segments[-1]
+        if "." not in name:
+            return "(无扩展名)"
+        return "." + name.rsplit(".", 1)[-1].lower()
+
+    # ------------------------------------------------------------------
     # 工具方法
     # ------------------------------------------------------------------
     @staticmethod
@@ -1270,6 +1957,8 @@ class GhostTransferCleaner(_PluginBase):
             logger.error(f"幽灵整理记录：读取历史扫描结果失败：{err}")
             stored = {}
         if isinstance(stored, dict):
+            self._report = str(stored.get("report") or "")
+            self._report_time = str(stored.get("report_time") or "")
             ghosts = stored.get("ghosts")
             stats = stored.get("stats")
             if isinstance(stats, dict) and stats.get("engine") == ENGINE_VERSION:
@@ -1283,6 +1972,14 @@ class GhostTransferCleaner(_PluginBase):
 
     def __save(self):
         try:
-            self.save_data("status", {"ghosts": self._ghosts, "stats": self._stats})
+            self.save_data(
+                "status",
+                {
+                    "ghosts": self._ghosts,
+                    "stats": self._stats,
+                    "report": self._report,
+                    "report_time": self._report_time,
+                },
+            )
         except Exception as err:
             logger.error(f"幽灵整理记录：保存扫描结果失败：{err}")
