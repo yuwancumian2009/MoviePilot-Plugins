@@ -574,11 +574,11 @@ class GhostTransferCleaner(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
     # 插件版本
-    plugin_version = "1.9.4"
+    plugin_version = "1.9.5"
     # 插件作者
-    plugin_author = "呵呵"
+    plugin_author = "yuwancumian2009"
     # 作者主页
-    author_url = ""
+    author_url = "https://github.com/yuwancumian2009"
     # 插件配置项ID前缀
     plugin_config_prefix = "ghosttransfercleaner_"
     # 加载顺序
