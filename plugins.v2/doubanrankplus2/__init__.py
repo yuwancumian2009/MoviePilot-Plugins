@@ -77,17 +77,18 @@ class RssInfo(TypedDict):
     mtype: str
     doubanid: str | None
     year: str | None
+    douban_vote: float | None
 
 
 class DoubanRankPlus2(_PluginBase):
     # 插件名称
     plugin_name = "豆瓣榜单Plus（自用）"
     # 插件描述
-    plugin_desc = "豆瓣榜单增强订阅：综艺季识别、TMDB系列评分与可重试历史"
+    plugin_desc = "豆瓣榜单增强订阅：豆瓣/TMDB双评分过滤、综艺季识别与可重试历史"
     # 插件图标
     plugin_icon = ""
     # 插件版本
-    plugin_version = "1.2.0"
+    plugin_version = "1.3.0"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -145,6 +146,14 @@ class DoubanRankPlus2(_PluginBase):
     _allow_unrated: bool = True
     _use_series_rating: bool = True
     _min_vote_count: int = 20
+    # 豆瓣评分阈值、评分策略（both/any/douban/tmdb）、评价人数下限与低口碑过滤
+    _douban_vote: float = 6.0
+    _vote_strategy: str = "both"
+    _min_douban_count: int = 500
+    _min_tmdb_count: int = 50
+    _low_reputation_enabled: bool = True
+    _low_reputation_max_ratio: float = 0.25
+    _low_reputation_margin: float = 0.5
     _title_aliases_raw: str = ""
     _title_aliases: Dict[str, str] = {}
 
@@ -163,6 +172,10 @@ class DoubanRankPlus2(_PluginBase):
         self.mediachain = MediaChain()
         self.doubanapi = DoubanApi()
 
+        # 本轮任务内的豆瓣信息/星级分布缓存，避免同一作品重复请求
+        self._douban_info_cache: Dict[str, Dict[str, Any]] = {}
+        self._douban_star_cache: Dict[str, List[float]] = {}
+
         if config:
             self._enabled = config.get("enabled", False)
             self._proxy = config.get("proxy", False)
@@ -174,6 +187,35 @@ class DoubanRankPlus2(_PluginBase):
             self._min_vote_count = self.__safe_int(
                 config.get("min_vote_count", 20), default=20, minimum=0
             )
+            self._douban_vote = self.__safe_float(
+                config.get("douban_vote", 6.0), default=6.0
+            )
+            if not 0 <= self._douban_vote <= 10:
+                logger.warn("豆瓣评分阈值超出 0-10 范围，已按默认值 6.0 处理")
+                self._douban_vote = 6.0
+            self._vote_strategy = self.__normalize_vote_strategy(
+                config.get("vote_strategy", "both")
+            )
+            self._min_douban_count = self.__safe_int(
+                config.get("min_douban_count", 500), default=500, minimum=0
+            )
+            self._min_tmdb_count = self.__safe_int(
+                config.get("min_tmdb_count", 50), default=50, minimum=0
+            )
+            self._low_reputation_enabled = bool(
+                config.get("low_reputation_enabled", True)
+            )
+            self._low_reputation_max_ratio = self.__safe_float(
+                config.get("low_reputation_max_ratio", 0.25), default=0.25
+            )
+            if not 0 <= self._low_reputation_max_ratio <= 1:
+                logger.warn("低口碑占比上限超出 0-1 范围，已按默认值 0.25 处理")
+                self._low_reputation_max_ratio = 0.25
+            self._low_reputation_margin = self.__safe_float(
+                config.get("low_reputation_margin", 0.5), default=0.5
+            )
+            if self._low_reputation_margin < 0:
+                self._low_reputation_margin = 0.5
             self._title_aliases_raw = str(config.get("title_aliases", "") or "")
             self._title_aliases = self.__parse_title_aliases(self._title_aliases_raw)
 
@@ -525,14 +567,59 @@ class DoubanRankPlus2(_PluginBase):
                             "content": [
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 6},
+                                    "props": {"cols": 12, "md": 3},
                                     "content": [
                                         {
                                             "component": "VTextField",
                                             "props": {
                                                 "model": "vote",
-                                                "label": "评分",
-                                                "placeholder": "评分大于等于该值才订阅",
+                                                "label": "TMDB 评分阈值",
+                                                "placeholder": "TMDB 评分大于等于该值，默认 6.0",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 3},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "douban_vote",
+                                                "label": "豆瓣评分阈值",
+                                                "placeholder": "豆瓣评分大于等于该值，默认 6.0",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 3},
+                                    "content": [
+                                        {
+                                            "component": "VSelect",
+                                            "props": {
+                                                "model": "vote_strategy",
+                                                "label": "评分策略",
+                                                "items": [
+                                                    {
+                                                        "title": "同时达标（豆瓣与TMDB都要满足）",
+                                                        "value": "both",
+                                                    },
+                                                    {
+                                                        "title": "任一达标（满足其一即可）",
+                                                        "value": "any",
+                                                    },
+                                                    {
+                                                        "title": "仅看豆瓣评分",
+                                                        "value": "douban",
+                                                    },
+                                                    {
+                                                        "title": "仅看TMDB评分",
+                                                        "value": "tmdb",
+                                                    },
+                                                ],
                                             },
                                         }
                                     ],
@@ -551,6 +638,39 @@ class DoubanRankPlus2(_PluginBase):
                                         }
                                     ],
                                 },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 3},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "min_douban_count",
+                                                "label": "豆瓣评价人数下限",
+                                                "placeholder": "默认 500，0 表示不限",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 3},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "min_tmdb_count",
+                                                "label": "TMDB 票数下限",
+                                                "placeholder": "默认 50，0 表示不限",
+                                            },
+                                        }
+                                    ],
+                                },
                                 {
                                     "component": "VCol",
                                     "props": {"cols": 12, "md": 3},
@@ -561,6 +681,52 @@ class DoubanRankPlus2(_PluginBase):
                                                 "model": "min_vote_count",
                                                 "label": "系列前作最低票数",
                                                 "placeholder": "默认 20，0 表示不限",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 3},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "low_reputation_margin",
+                                                "label": "低口碑检查区间",
+                                                "placeholder": "默认 0.5，仅检查阈值上方该分数段",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 6},
+                                    "content": [
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
+                                                "model": "low_reputation_enabled",
+                                                "label": "启用低口碑过滤（豆瓣1-2星占比过高时拒绝）",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 6},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "low_reputation_max_ratio",
+                                                "label": "低口碑1-2星占比上限",
+                                                "placeholder": "默认 0.25（即 25%）",
                                             },
                                         }
                                     ],
@@ -823,6 +989,13 @@ class DoubanRankPlus2(_PluginBase):
                 "allow_unrated": True,
                 "use_series_rating": True,
                 "min_vote_count": "20",
+                "douban_vote": "6.0",
+                "vote_strategy": "both",
+                "min_douban_count": "500",
+                "min_tmdb_count": "50",
+                "low_reputation_enabled": True,
+                "low_reputation_max_ratio": "0.25",
+                "low_reputation_margin": "0.5",
                 "title_aliases": "",
                 "history_type": HistoryDataType.LATEST.value,
                 "is_exit_ip_rate_limit": False,
@@ -1324,6 +1497,13 @@ class DoubanRankPlus2(_PluginBase):
             "allow_unrated": self._allow_unrated,
             "use_series_rating": self._use_series_rating,
             "min_vote_count": str(self._min_vote_count),
+            "douban_vote": str(self._douban_vote),
+            "vote_strategy": self._vote_strategy,
+            "min_douban_count": str(self._min_douban_count),
+            "min_tmdb_count": str(self._min_tmdb_count),
+            "low_reputation_enabled": self._low_reputation_enabled,
+            "low_reputation_max_ratio": str(self._low_reputation_max_ratio),
+            "low_reputation_margin": str(self._low_reputation_margin),
             "title_aliases": self._title_aliases_raw,
             "release_year": str(self._release_year),
             "sleep_time": f"{self._min_sleep_time},{self._max_sleep_time}",
@@ -1793,22 +1973,23 @@ class DoubanRankPlus2(_PluginBase):
 
     def __get_tv_season_vote(
         self, tmdb_id: int, season: int
-    ) -> Tuple[float | None, bool]:
-        """优先读取季评分，缺失时按各集票数加权计算。"""
+    ) -> Tuple[float | None, int, bool]:
+        """优先读取季评分，缺失时按各集票数加权计算；返回 (评分, 票数, 是否成功)。"""
         try:
             season_info = self.chain.tmdb_info(
                 tmdbid=tmdb_id, mtype=MediaType.TV, season=season
             )
         except Exception as err:
             logger.error(f"查询TMDB季详情失败：TMDB={tmdb_id}, S{season:02d}，{err}")
-            return None, False
+            return None, 0, False
         if season_info is None:
-            return None, False
+            return None, 0, False
         if not season_info:
-            return None, True
+            return None, 0, True
         season_vote = self.__safe_float(season_info.get("vote_average"))
+        season_count = self.__safe_int(season_info.get("vote_count"), minimum=0)
         if season_vote > 0:
-            return season_vote, True
+            return season_vote, season_count, True
 
         weighted_sum = 0.0
         total_count = 0
@@ -1820,8 +2001,8 @@ class DoubanRankPlus2(_PluginBase):
             weighted_sum += vote * vote_count
             total_count += vote_count
         if total_count <= 0:
-            return None, True
-        return weighted_sum / total_count, True
+            return None, 0, True
+        return weighted_sum / total_count, total_count, True
 
     def __check_unrated_policy(
         self, mediainfo: MediaInfo, season: int | None
@@ -1849,7 +2030,7 @@ class DoubanRankPlus2(_PluginBase):
             return None if average >= self._vote else Status.RATING_PENDING
 
         current_season = season or 1
-        current_vote, success = self.__get_tv_season_vote(
+        current_vote, _current_vote_count, success = self.__get_tv_season_vote(
             mediainfo.tmdb_id, current_season
         )
         if not success:
@@ -1866,7 +2047,7 @@ class DoubanRankPlus2(_PluginBase):
 
         previous_votes = []
         for season_number in range(1, current_season):
-            vote, success = self.__get_tv_season_vote(
+            vote, _season_vote_count, success = self.__get_tv_season_vote(
                 mediainfo.tmdb_id, season_number
             )
             if not success:
@@ -1884,10 +2065,257 @@ class DoubanRankPlus2(_PluginBase):
         )
         return None if average >= self._vote else Status.RATING_PENDING
 
+    # ==================== 豆瓣/TMDB 双评分过滤 ====================
+
+    @staticmethod
+    def __normalize_vote_strategy(strategy: Any) -> str:
+        """评分策略：both=同时达标，any=任一达标，douban=仅豆瓣，tmdb=仅TMDB。"""
+        value = str(strategy or "").strip().lower()
+        return value if value in {"both", "any", "douban", "tmdb"} else "both"
+
+    def __is_douban_gate_enabled(self) -> bool:
+        """豆瓣评分是否参与门槛判定。"""
+        return self._douban_vote > 0 and self._vote_strategy in {
+            "both",
+            "any",
+            "douban",
+        }
+
+    def __is_tmdb_gate_enabled(self) -> bool:
+        """TMDB 评分是否参与门槛判定。"""
+        return self._vote > 0 and self._vote_strategy in {"both", "any", "tmdb"}
+
+    def __get_douban_rating(
+        self, doubanid: str | None, mtype: MediaType | None = None
+    ) -> Tuple[float, int, bool]:
+        """返回 (豆瓣评分, 评价人数, 是否有有效评分)；未出分或失败时评分为 0。"""
+        if not doubanid:
+            return 0.0, 0, False
+        info, _is_ip_rate_limit = self.__douban_info(
+            doubanid=str(doubanid), mtype=mtype
+        )
+        if not info or not isinstance(info, dict):
+            return 0.0, 0, False
+        rating = info.get("rating")
+        if not isinstance(rating, dict):
+            rating = {}
+        vote = self.__safe_float(rating.get("value"))
+        if not 0 < vote <= 10:
+            vote = 0.0
+        count = self.__safe_int(rating.get("count"), minimum=0)
+        return vote, count, vote > 0
+
+    def __get_douban_star_stats(
+        self, doubanid: str | None, mtype: MediaType | None = None
+    ) -> List[float] | None:
+        """获取豆瓣星级分布（1~5 星占比，已归一化）；失败返回 None。"""
+        if not doubanid:
+            return None
+        cache_key = str(doubanid)
+        if cache_key in self._douban_star_cache:
+            return self._douban_star_cache[cache_key]
+        subject_type = "tv" if mtype == MediaType.TV else "movie"
+        invoke = getattr(self.doubanapi, "_DoubanApi__invoke_search", None)
+        if not callable(invoke):
+            return None
+        try:
+            data = invoke(f"/{subject_type}/{doubanid}/rating")
+        except Exception as err:
+            logger.debug(f"获取豆瓣星级分布失败：{doubanid}，{err}")
+            return None
+        stats: List[float] = []
+        if isinstance(data, dict) and isinstance(data.get("stats"), list):
+            for value in data.get("stats") or []:
+                stats.append(max(0.0, self.__safe_float(value)))
+        if len(stats) != 5 or sum(stats) <= 0:
+            return None
+        total = sum(stats)
+        stats = [value / total for value in stats]
+        self._douban_star_cache[cache_key] = stats
+        return stats
+
+    def __is_low_reputation(
+        self, doubanid: str | None, mtype: MediaType | None, douban_vote: float
+    ) -> bool:
+        """
+        低口碑判定：仅对“评分刚过阈值”的边界样本查询星级分布，
+        1~2 星占比超过上限则判定为低口碑；查询失败时放行。
+        """
+        if not self._low_reputation_enabled or not doubanid:
+            return False
+        if self._douban_vote <= 0 or douban_vote < self._douban_vote:
+            return False
+        if (
+            self._low_reputation_margin > 0
+            and douban_vote >= self._douban_vote + self._low_reputation_margin
+        ):
+            return False
+        stats = self.__get_douban_star_stats(doubanid, mtype)
+        if not stats:
+            return False
+        low_ratio = stats[0] + stats[1]
+        if low_ratio > self._low_reputation_max_ratio:
+            logger.info(
+                f"豆瓣 {doubanid} 评分 {douban_vote:.1f}，但 1-2 星占比 "
+                f"{low_ratio:.1%} 超过上限 {self._low_reputation_max_ratio:.0%}，判定为低口碑"
+            )
+            return True
+        return False
+
+    def __check_douban_gate(
+        self, rss_vote: Any, doubanid: str | None, mtype: MediaType | None
+    ) -> Tuple[Status | None, float, int, str]:
+        """
+        识别前的豆瓣评分早筛，返回 (拒绝状态, 豆瓣评分, 评价人数, 原因)。
+        仅在豆瓣评分单独即可判定不达标时拒绝（同时达标/仅豆瓣 策略），
+        从而省去 TMDB 搜索与逐季查询；未出分时不做早筛。
+        """
+        if not self.__is_douban_gate_enabled():
+            return None, 0.0, 0, ""
+        if self._vote_strategy not in {"both", "douban"}:
+            return None, 0.0, 0, ""
+
+        # 第一层：RSS 描述自带评分且已低于阈值，零请求直接拒绝
+        rss_vote_value = self.__safe_float(rss_vote)
+        if 0 < rss_vote_value <= 10 and rss_vote_value < self._douban_vote:
+            return (
+                Status.RATING_NOT_MATCH,
+                rss_vote_value,
+                0,
+                f"RSS 豆瓣评分 {rss_vote_value:.1f} 低于阈值 {self._douban_vote}",
+            )
+
+        # 第二层：需要评价人数（或 RSS 无评分）时查询豆瓣详情，本轮缓存复用
+        vote, count, has_rating = self.__get_douban_rating(doubanid, mtype)
+        if not has_rating:
+            return None, 0.0, 0, ""
+        if self._min_douban_count > 0 and count < self._min_douban_count:
+            return (
+                Status.RATING_NOT_MATCH,
+                vote,
+                count,
+                f"豆瓣评价人数 {count} 低于下限 {self._min_douban_count}",
+            )
+        if vote < self._douban_vote:
+            return (
+                Status.RATING_NOT_MATCH,
+                vote,
+                count,
+                f"豆瓣评分 {vote:.1f} 低于阈值 {self._douban_vote}",
+            )
+
+        # 第三层：边界样本的低口碑判定（1-2 星占比）
+        if self.__is_low_reputation(doubanid, mtype, vote):
+            return (
+                Status.RATING_NOT_MATCH,
+                vote,
+                count,
+                "豆瓣 1-2 星占比过高（低口碑）",
+            )
+        return None, vote, count, ""
+
+    def __evaluate_rating_gate(
+        self,
+        tmdb_vote: float,
+        tmdb_count: int,
+        douban_vote: float,
+        douban_count: int,
+    ) -> Tuple[Status | None, str, bool]:
+        """
+        按评分策略评估豆瓣与 TMDB 两个评分源。
+        返回 (拒绝状态, 说明, 是否需要走未出分策略)。
+        """
+        results: Dict[str, str] = {}
+        if self.__is_tmdb_gate_enabled():
+            if tmdb_vote <= 0:
+                results["tmdb"] = "unknown"
+            elif self._min_tmdb_count > 0 and tmdb_count < self._min_tmdb_count:
+                results["tmdb"] = "count"
+            elif tmdb_vote < self._vote:
+                results["tmdb"] = "score"
+            else:
+                results["tmdb"] = "pass"
+        if self.__is_douban_gate_enabled():
+            if douban_vote <= 0:
+                results["douban"] = "unknown"
+            elif (
+                self._min_douban_count > 0
+                and douban_count < self._min_douban_count
+            ):
+                results["douban"] = "count"
+            elif douban_vote < self._douban_vote:
+                results["douban"] = "score"
+            else:
+                results["douban"] = "pass"
+
+        enabled = list(results.keys())
+        if not enabled:
+            return None, "", False
+
+        def __state(key: str) -> str:
+            return results.get(key, "")
+
+        def __reason(key: str) -> str:
+            if key == "douban":
+                if __state(key) == "count":
+                    return (
+                        f"豆瓣评价人数 {douban_count} 低于下限 "
+                        f"{self._min_douban_count}"
+                    )
+                return f"豆瓣评分 {douban_vote:.1f} 低于阈值 {self._douban_vote}"
+            if __state(key) == "count":
+                return f"TMDB票数 {tmdb_count} 低于下限 {self._min_tmdb_count}"
+            return f"TMDB评分 {tmdb_vote:.1f} 低于阈值 {self._vote}"
+
+        def __summary() -> str:
+            parts = []
+            if "douban" in results:
+                parts.append(
+                    f"豆瓣{douban_vote:.1f}分/{douban_count}人"
+                    if douban_vote > 0
+                    else "豆瓣未出分"
+                )
+            if "tmdb" in results:
+                parts.append(
+                    f"TMDB{tmdb_vote:.1f}分/{tmdb_count}票"
+                    if tmdb_vote > 0
+                    else "TMDB未出分"
+                )
+            return "，".join(parts)
+
+        fails = [key for key in enabled if __state(key) in {"score", "count"}]
+        passes = [key for key in enabled if __state(key) == "pass"]
+        unknowns = [key for key in enabled if __state(key) == "unknown"]
+
+        if self._vote_strategy == "any":
+            if passes:
+                return None, "", False
+            if fails:
+                return (
+                    Status.RATING_NOT_MATCH,
+                    f"{__summary()}（{'、'.join(__reason(key) for key in fails)}）",
+                    False,
+                )
+            return None, "", True
+
+        if fails:
+            return (
+                Status.RATING_NOT_MATCH,
+                f"{__summary()}（{'、'.join(__reason(key) for key in fails)}）",
+                False,
+            )
+        if unknowns:
+            return None, "", True
+        return None, "", False
+
     def __start_task(self):
         """
         运行任务
         """
+        # 清理本轮任务的豆瓣缓存
+        self._douban_info_cache = {}
+        self._douban_star_cache = {}
+
         if self._migrate_once:
             if self._migrate_from_url and self._migrate_api_token:
                 logger.info("开始从原MP迁移配置...")
@@ -2083,6 +2511,38 @@ class DoubanRankPlus2(_PluginBase):
                         )
                         continue
 
+                    # 豆瓣评分早筛：识别前先按豆瓣评分/评价人数/口碑过滤，
+                    # 命中则省去 TMDB 搜索与逐季查询（仅“同时达标/仅豆瓣”策略生效）。
+                    (
+                        gate_status,
+                        gate_vote,
+                        _gate_count,
+                        gate_reason,
+                    ) = self.__check_douban_gate(
+                        rss_vote=rss_info.get("douban_vote"),
+                        doubanid=douban_id,
+                        mtype=mtype,
+                    )
+                    if gate_status:
+                        logger.info(
+                            f"豆瓣评分早筛拒绝: Title: {title}, Year:{year}, "
+                            f"DBID:{douban_id}, 原因: {gate_reason}"
+                        )
+                        history_payload = (
+                            DoubanRankPlus2.__get_history_rejected_payload(
+                                title=title,
+                                unique=unique_flag,
+                                status=gate_status,
+                                vote=gate_vote,
+                                year=year,
+                                doubanid=douban_id,
+                            )
+                        )
+                        self.__remove_retryable_history(history, unique_flag)
+                        history.append(history_payload)
+                        unique_flags.add(unique_flag)
+                        continue
+
                     logger.info(
                         f"开始处理: Title: {title}, Year:{year}, DBID:{douban_id}, Type:{mtype}"
                     )
@@ -2206,6 +2666,7 @@ class DoubanRankPlus2(_PluginBase):
                                 save_path=save_path,
                                 is_exist_all=is_exist_all,
                                 missing_season=missing_season,
+                                douban_id=douban_id,
                             )
                             if not meta.begin_season or i == meta.begin_season:
                                 status = __status
@@ -2217,6 +2678,7 @@ class DoubanRankPlus2(_PluginBase):
                             save_path=save_path,
                             is_exist_all=is_exist_all,
                             missing_season=missing_season,
+                            douban_id=douban_id,
                         )
 
                     # 覆盖同一条目的旧可重试记录，避免历史面板不断累积。
@@ -2304,6 +2766,7 @@ class DoubanRankPlus2(_PluginBase):
         save_path,
         is_exist_all: bool,
         missing_season: list[int] | None,
+        douban_id: str | None = None,
     ) -> Status:
 
         if is_exist_all:
@@ -2343,26 +2806,47 @@ class DoubanRankPlus2(_PluginBase):
             )
             return Status.YEAR_NOT_MATCH
 
+        # 评分过滤：豆瓣 + TMDB 双评分，按策略（同时达标/任一达标/单源）判定。
         # 电影使用作品评分；剧集有明确季号时必须使用当前季评分，不能用整部系列总评分代替。
-        if self._vote:
+        if self.__is_tmdb_gate_enabled() or self.__is_douban_gate_enabled():
+            tmdb_vote = 0.0
+            tmdb_count = 0
             if mediainfo.type == MediaType.TV and season:
-                vote_average, query_success = self.__get_tv_season_vote(
-                    mediainfo.tmdb_id, season
+                season_vote, season_count, query_success = (
+                    self.__get_tv_season_vote(mediainfo.tmdb_id, season)
                 )
                 if not query_success:
                     return Status.RETRY_LATER
-                vote_average = vote_average or 0.0
+                tmdb_vote = season_vote or 0.0
+                tmdb_count = season_count
             else:
-                vote_average = self.__safe_float(mediainfo.vote_average)
+                tmdb_vote = self.__safe_float(mediainfo.vote_average)
+                tmdb_count = self.__safe_int(
+                    getattr(mediainfo, "vote_count", 0), minimum=0
+                )
 
-            if vote_average > 0 and vote_average < self._vote:
+            douban_vote, douban_count, _douban_ok = self.__get_douban_rating(
+                douban_id, mediainfo.type
+            )
+
+            gate_status, gate_reason, need_unrated = (
+                self.__evaluate_rating_gate(
+                    tmdb_vote=tmdb_vote,
+                    tmdb_count=tmdb_count,
+                    douban_vote=douban_vote,
+                    douban_count=douban_count,
+                )
+            )
+            if gate_status:
                 logger.info(
                     f"{mediainfo.title_year}"
                     f"{' 第' + str(season) + '季' if season else ''}"
-                    f"评分: {vote_average:.2f}, 不符合要求"
+                    f"评分不符合要求：{gate_reason}"
                 )
-                return Status.RATING_NOT_MATCH
-            if vote_average <= 0:
+                return gate_status
+
+            # 存在未出分的评分源时，沿用未出分策略（前作/往季平均分）
+            if need_unrated:
                 unrated_status = self.__check_unrated_policy(
                     mediainfo=mediainfo, season=season
                 )
@@ -2470,22 +2954,36 @@ class DoubanRankPlus2(_PluginBase):
                     else:
                         doubanid = None
 
+                    # 描述：年份与豆瓣评分共用
+                    description = DomUtils.tag_value(
+                        item, "description", default=""
+                    )
+
+                    # 豆瓣评分：RSS 描述通常形如 “评分：7.3分”，豆列等榜单可能没有
+                    douban_vote = None
+                    found_rating = re.findall(
+                        r"评分[：:]\s*([0-9]+(?:\.[0-9]+)?)",
+                        str(description) or "",
+                    )
+                    if found_rating:
+                        douban_vote = self.__safe_float(found_rating[0])
+                        if not 0 < douban_vote <= 10:
+                            douban_vote = None
+
                     # 年份
                     year = DomUtils.tag_value(item, "year", default="")
                     if not year:
-                        # 年份
-                        description = DomUtils.tag_value(
-                            item, "description", default=""
-                        )
                         # 删除 '评价数' 到第一个 '<br>' 之间的字符串
-                        description = re.sub(
+                        year_description = re.sub(
                             r"评价数.*?<br>", "", str(description) or ""
                         )
                         # 删除所有 <img> 标签及其内容
-                        description = re.sub(r"<img.*?>", "", description)
+                        year_description = re.sub(
+                            r"<img.*?>", "", year_description
+                        )
                         # 匹配4位独立数字1900-2099年
                         found_year = re.findall(
-                            r"\b(19\d{2}|20\d{2})\b", description
+                            r"\b(19\d{2}|20\d{2})\b", year_description
                         )
                         year = found_year[0] if found_year else None
 
@@ -2498,6 +2996,7 @@ class DoubanRankPlus2(_PluginBase):
                         "mtype": str(mtype),
                         "year": str(year) if year else None,
                         "doubanid": str(doubanid) if doubanid else None,
+                        "douban_vote": douban_vote,
                     }
                     # 返回对象
                     ret_array.append(rss_info)
@@ -2616,6 +3115,23 @@ class DoubanRankPlus2(_PluginBase):
             ).strftime("%Y-%m-%d %H:%M:%S"),
             "vote": 0.0,
         }
+        return history_payload
+
+    @staticmethod
+    def __get_history_rejected_payload(
+        title: str,
+        unique: str,
+        status: Status,
+        vote: float,
+        year: str | None = None,
+        doubanid: str | None = None,
+    ) -> HistoryPayload:
+        """识别前被评分/口碑过滤拒绝的历史记录（尚无 TMDB 信息）。"""
+        history_payload = DoubanRankPlus2.__get_history_unrecognized_payload(
+            title=title, unique=unique, year=year, doubanid=doubanid
+        )
+        history_payload["status"] = status.value
+        history_payload["vote"] = vote
         return history_payload
 
     def __get_tmdbinfo_by_doubanid(
@@ -2749,16 +3265,27 @@ class DoubanRankPlus2(_PluginBase):
 
         if not doubanid:
             return None, False
+
+        # 本轮任务内缓存，早筛与订阅判定会各取一次，避免重复请求
+        cache_key = str(doubanid)
+        cached_info = self._douban_info_cache.get(cache_key)
+        if cached_info is not None:
+            return cached_info, False
+
         logger.info(f"开始获取豆瓣信息：{doubanid} ...")
         if mtype == MediaType.TV:
-            return __douban_tv()
+            info, is_ip_rate_limit = __douban_tv()
         else:
             movie_info, is_ip_rate_limit = __douban_movie()
             if not movie_info and not is_ip_rate_limit:
                 logger.debug("未从电影类型获取到信息，返回从剧集获取信息")
-                return __douban_tv()
+                info, is_ip_rate_limit = __douban_tv()
             else:
-                return movie_info, is_ip_rate_limit
+                info, is_ip_rate_limit = movie_info, is_ip_rate_limit
+
+        if isinstance(info, dict) and info and not is_ip_rate_limit:
+            self._douban_info_cache[cache_key] = info
+        return info, is_ip_rate_limit
 
     def __get_migrate_info(self, migrate_url: str):
         """
