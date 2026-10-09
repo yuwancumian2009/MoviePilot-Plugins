@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 from enum import Enum
 
 from app.schemas import Response
-from app.schemas.types import MediaType, EventType
+from app.schemas.types import MediaType, EventType, NotificationType
 from app.core.context import MediaInfo
 from app.core.event import Event as ManagerEvent, eventmanager
 from app.core.meta.metabase import MetaBase
@@ -88,7 +88,7 @@ class DoubanRankPlus2(_PluginBase):
     # 插件图标
     plugin_icon = ""
     # 插件版本
-    plugin_version = "1.3.0"
+    plugin_version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -154,6 +154,7 @@ class DoubanRankPlus2(_PluginBase):
     _low_reputation_enabled: bool = True
     _low_reputation_max_ratio: float = 0.25
     _low_reputation_margin: float = 0.5
+    _notify: bool = True
     _title_aliases_raw: str = ""
     _title_aliases: Dict[str, str] = {}
 
@@ -216,6 +217,7 @@ class DoubanRankPlus2(_PluginBase):
             )
             if self._low_reputation_margin < 0:
                 self._low_reputation_margin = 0.5
+            self._notify = config.get("notify", True)
             self._title_aliases_raw = str(config.get("title_aliases", "") or "")
             self._title_aliases = self.__parse_title_aliases(self._title_aliases_raw)
 
@@ -738,6 +740,24 @@ class DoubanRankPlus2(_PluginBase):
                             "content": [
                                 {
                                     "component": "VCol",
+                                    "props": {"cols": 12, "md": 6},
+                                    "content": [
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
+                                                "model": "notify",
+                                                "label": "运行结束后推送通知（无论是否有新增订阅）",
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
                                     "props": {"cols": 12},
                                     "content": [
                                         {
@@ -996,6 +1016,7 @@ class DoubanRankPlus2(_PluginBase):
                 "low_reputation_enabled": True,
                 "low_reputation_max_ratio": "0.25",
                 "low_reputation_margin": "0.5",
+                "notify": True,
                 "title_aliases": "",
                 "history_type": HistoryDataType.LATEST.value,
                 "is_exit_ip_rate_limit": False,
@@ -1504,6 +1525,7 @@ class DoubanRankPlus2(_PluginBase):
             "low_reputation_enabled": self._low_reputation_enabled,
             "low_reputation_max_ratio": str(self._low_reputation_max_ratio),
             "low_reputation_margin": str(self._low_reputation_margin),
+            "notify": self._notify,
             "title_aliases": self._title_aliases_raw,
             "release_year": str(self._release_year),
             "sleep_time": f"{self._min_sleep_time},{self._max_sleep_time}",
@@ -2441,6 +2463,35 @@ class DoubanRankPlus2(_PluginBase):
             and not self.__is_legacy_zero_vote_history(h)
         }
 
+        # 本次运行的统计与新增订阅，用于运行结束后推送通知
+        run_status_counter: Dict[str, int] = {}
+        run_added_subscriptions: List[Dict[str, Any]] = []
+
+        def __record_history(payload: HistoryPayload) -> None:
+            """写入历史记录，并统计本次运行结果（供运行结束通知使用）。"""
+            history.append(payload)
+            __status_text = str(payload.get("status") or "")
+            run_status_counter[__status_text] = (
+                run_status_counter.get(__status_text, 0) + 1
+            )
+            if __status_text != Status.SUBSCRIPTION_ADDED.value:
+                return
+            # 豆瓣评分本轮已缓存，此处不会产生额外请求
+            __douban_vote, _douban_count, _has_rating = self.__get_douban_rating(
+                payload.get("doubanid"), None
+            )
+            run_added_subscriptions.append(
+                {
+                    "title": payload.get("title"),
+                    "type": payload.get("type"),
+                    "year": payload.get("year"),
+                    "doubanid": payload.get("doubanid"),
+                    "tmdbid": payload.get("tmdbid"),
+                    "tmdb_vote": payload.get("vote"),
+                    "douban_vote": __douban_vote,
+                }
+            )
+
         # count_addr_list = 0
         for addr_index, _addr in enumerate(addr_list):
             # count_addr_list += 1
@@ -2539,7 +2590,7 @@ class DoubanRankPlus2(_PluginBase):
                             )
                         )
                         self.__remove_retryable_history(history, unique_flag)
-                        history.append(history_payload)
+                        __record_history(history_payload)
                         unique_flags.add(unique_flag)
                         continue
 
@@ -2572,7 +2623,7 @@ class DoubanRankPlus2(_PluginBase):
                         if should_retry:
                             history_payload["status"] = Status.RETRY_LATER.value
                         self.__remove_retryable_history(history, unique_flag)
-                        history.append(history_payload)
+                        __record_history(history_payload)
                         logger.debug(f"已添加到可重试历史：{history_payload}")
                         continue
 
@@ -2703,7 +2754,7 @@ class DoubanRankPlus2(_PluginBase):
                         "vote": mediainfo.vote_average,
                         "status": status.value,
                     }
-                    history.append(history_payload)
+                    __record_history(history_payload)
                     if self.__is_retryable_status(status.value):
                         unique_flags.discard(unique_flag)
                     else:
@@ -2719,6 +2770,110 @@ class DoubanRankPlus2(_PluginBase):
                 self.save_data("history", history)
 
         logger.info("所有榜单RSS刷新完成")
+
+        # 运行结束后推送通知（无论本次是否有新增订阅）
+        self.__send_run_notification(
+            status_counter=run_status_counter,
+            added_subscriptions=run_added_subscriptions,
+        )
+
+    def __send_run_notification(
+        self,
+        status_counter: Dict[str, int],
+        added_subscriptions: List[Dict[str, Any]],
+    ) -> None:
+        """
+        运行结束后通过 MP 通知系统推送本次执行结果。
+        无论是否有新增订阅都会发送；可在插件设置页关闭。
+        """
+        if not self._notify:
+            logger.info("未开启运行结果通知，跳过推送")
+            return
+        try:
+            total = sum(status_counter.values())
+            added_count = len(added_subscriptions)
+            if added_count:
+                title = f"豆瓣榜单订阅完成：新增 {added_count} 个订阅"
+            else:
+                title = "豆瓣榜单订阅完成：无新增订阅"
+
+            lines: List[str] = []
+            if total:
+                lines.append(f"本次共处理 {total} 条榜单条目")
+            for status in Status:
+                count = status_counter.get(status.value, 0)
+                if count:
+                    lines.append(f"· {status.value}：{count}")
+            known_status = {status.value for status in Status}
+            for status_text, count in status_counter.items():
+                if status_text and status_text not in known_status:
+                    lines.append(f"· {status_text}：{count}")
+
+            if added_count:
+                lines.append("")
+                lines.append(f"新增订阅（{added_count}）：")
+                for index, item in enumerate(added_subscriptions, start=1):
+                    lines.append(
+                        f"{index}. {DoubanRankPlus2.__get_notify_subscription_line(item)}"
+                    )
+            else:
+                lines.append("")
+                lines.append("本次没有新增订阅。")
+
+            self.post_message(
+                mtype=NotificationType.Plugin,
+                title=title,
+                text="\n".join(lines),
+            )
+            logger.info(f"已推送运行结果通知：{title}")
+        except Exception as err:
+            logger.error(f"推送运行结果通知失败：{str(err)}")
+
+    @staticmethod
+    def __get_notify_subscription_line(item: Dict[str, Any]) -> str:
+        """构造通知中单条新增订阅的描述行。"""
+        type_text = str(item.get("type") or "").strip()
+        title = str(item.get("title") or "").strip() or "未知"
+        year = str(item.get("year") or "").strip()
+        name = f"{title} ({year})" if year else title
+        parts = [f"[{type_text}] {name}" if type_text else name]
+
+        try:
+            douban_vote = float(item.get("douban_vote") or 0)
+        except (TypeError, ValueError):
+            douban_vote = 0.0
+        try:
+            tmdb_vote = float(item.get("tmdb_vote") or 0)
+        except (TypeError, ValueError):
+            tmdb_vote = 0.0
+        vote_texts = []
+        if douban_vote > 0:
+            vote_texts.append(f"豆瓣 {douban_vote:.1f}")
+        if tmdb_vote > 0:
+            vote_texts.append(f"TMDB {tmdb_vote:.1f}")
+        if vote_texts:
+            parts.append(" ".join(vote_texts))
+
+        link = DoubanRankPlus2.__get_notify_subscription_link(item)
+        if link:
+            parts.append(link)
+        return " | ".join(parts)
+
+    @staticmethod
+    def __get_notify_subscription_link(item: Dict[str, Any]) -> str:
+        """构造新增订阅的详情页链接（优先豆瓣）。"""
+        doubanid = str(item.get("doubanid") or "").strip()
+        if doubanid and doubanid != "0":
+            return f"https://movie.douban.com/subject/{doubanid}/"
+        tmdbid = str(item.get("tmdbid") or "").strip()
+        if tmdbid and tmdbid != "0":
+            path = (
+                "tv"
+                if str(item.get("type") or "") == MediaType.TV.value
+                else "movie"
+            )
+            return f"https://www.themoviedb.org/{path}/{tmdbid}"
+        return ""
 
     def __check_lib_exists(
         self,
