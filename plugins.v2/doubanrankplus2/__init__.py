@@ -2,7 +2,7 @@ import datetime
 import re
 import xml.dom.minidom
 from threading import Event
-from typing import Optional, Tuple, List, Dict, Any, TypedDict
+from typing import Optional, Tuple, List, Dict, Any, Set, TypedDict
 import time
 import random
 import pytz
@@ -69,6 +69,7 @@ class HistoryPayload(TypedDict):
     time_full: str
     vote: float
     status: str
+    category: Optional[str]
 
 
 class RssInfo(TypedDict):
@@ -88,7 +89,7 @@ class DoubanRankPlus2(_PluginBase):
     # 插件图标
     plugin_icon = ""
     # 插件版本
-    plugin_version = "1.4.0"
+    plugin_version = "1.5.0"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -158,6 +159,121 @@ class DoubanRankPlus2(_PluginBase):
     _title_aliases_raw: str = ""
     _title_aliases: Dict[str, str] = {}
 
+    # 分类型评分阈值：留空=沿用统一规则，0=该源不设门槛
+    _cat_enabled: bool = True
+    _cat_raw: Dict[str, str] = {}
+    _cat_tv_rules: Dict[str, Dict[str, Optional[float]]] = {}
+    _cat_movie_rules: List[Tuple[Set[str], Dict[str, Optional[float]], str]] = []
+    _last_category_name: Optional[str] = None
+
+    # 剧集分类判定顺序与显示名：综艺 > 动漫 > 日韩剧 > 国产剧 > 欧美剧
+    _CATEGORY_NAMES: Dict[str, str] = {
+        "variety": "综艺",
+        "anime": "动漫",
+        "jk_tv": "日韩剧",
+        "cn_tv": "国产剧",
+        "west_tv": "欧美剧",
+    }
+    _VARIETY_GENRES: Set[str] = {"真人秀", "脱口秀", "综艺", "选秀", "音乐真人秀"}
+    _ANIME_GENRES: Set[str] = {"动画"}
+    _CN_REGIONS: Set[str] = {
+        "中国大陆",
+        "中国香港",
+        "中国台湾",
+        "中国澳门",
+        "大陆",
+        "香港",
+        "台湾",
+    }
+    _JK_REGIONS: Set[str] = {"韩国", "日本"}
+    _WEST_REGIONS: Set[str] = {
+        "美国",
+        "英国",
+        "加拿大",
+        "澳大利亚",
+        "新西兰",
+        "爱尔兰",
+        "法国",
+        "德国",
+        "意大利",
+        "西班牙",
+        "葡萄牙",
+        "荷兰",
+        "比利时",
+        "瑞典",
+        "丹麦",
+        "挪威",
+        "芬兰",
+        "冰岛",
+        "瑞士",
+        "奥地利",
+        "波兰",
+        "捷克",
+        "匈牙利",
+        "希腊",
+        "俄罗斯",
+        "乌克兰",
+        "墨西哥",
+        "巴西",
+        "阿根廷",
+        "智利",
+        "南非",
+    }
+    # 豆瓣独有类型 → TMDB 分类名 的归并
+    _GENRE_ALIASES: Dict[str, str] = {
+        "歌舞": "音乐",
+        "武侠": "动作",
+        "古装": "历史",
+        "传记": "历史",
+        "儿童": "家庭",
+        "戏曲": "音乐",
+        "黑色电影": "犯罪",
+        "灾难": "惊悚",
+    }
+    # 已知分类名（TMDB 电影分类 + 豆瓣常见类型），用于避免误削后缀
+    _KNOWN_GENRES: Set[str] = {
+        "动作",
+        "冒险",
+        "动画",
+        "喜剧",
+        "犯罪",
+        "纪录片",
+        "剧情",
+        "家庭",
+        "奇幻",
+        "历史",
+        "恐怖",
+        "音乐",
+        "悬疑",
+        "爱情",
+        "科幻",
+        "惊悚",
+        "战争",
+        "西部",
+        "电视电影",
+        "运动",
+        "古装",
+        "武侠",
+        "灾难",
+        "传记",
+        "儿童",
+        "短片",
+        "情色",
+        "同性",
+        "歌舞",
+        "戏曲",
+        "黑色电影",
+        "真人秀",
+        "脱口秀",
+        "综艺",
+        "悬疑片",
+    }
+    # 电影规则可选分类（TMDB 官方电影分类中文名）
+    _MOVIE_GENRE_HINT: str = (
+        "动作、冒险、动画、喜剧、犯罪、纪录片、剧情、家庭、奇幻、历史、"
+        "恐怖、音乐、悬疑、爱情、科幻、惊悚、战争、西部、电视电影"
+    )
+
     # 本插件创建过的订阅及用户手动取消后的抑制列表。
     # 数据使用 _PluginBase.save_data 持久化，不依赖插件配置保存。
     _managed_subscriptions_data_key = "managed_subscriptions"
@@ -220,6 +336,47 @@ class DoubanRankPlus2(_PluginBase):
             self._notify = config.get("notify", True)
             self._title_aliases_raw = str(config.get("title_aliases", "") or "")
             self._title_aliases = self.__parse_title_aliases(self._title_aliases_raw)
+
+            # 分类型评分阈值：剧集 5 个固定分类 + 电影按 TMDB 分类自定义规则
+            self._cat_enabled = bool(config.get("cat_enabled", True))
+            self._cat_raw = {
+                key: str(config.get(key, "") or "")
+                for key in (
+                    "cat_variety_douban",
+                    "cat_variety_tmdb",
+                    "cat_anime_douban",
+                    "cat_anime_tmdb",
+                    "cat_cn_tv_douban",
+                    "cat_cn_tv_tmdb",
+                    "cat_jk_tv_douban",
+                    "cat_jk_tv_tmdb",
+                    "cat_west_tv_douban",
+                    "cat_west_tv_tmdb",
+                    "cat_movie_rules",
+                )
+            }
+            self._cat_tv_rules = {}
+            for __category, __prefix in (
+                ("variety", "cat_variety"),
+                ("anime", "cat_anime"),
+                ("cn_tv", "cat_cn_tv"),
+                ("jk_tv", "cat_jk_tv"),
+                ("west_tv", "cat_west_tv"),
+            ):
+                __douban_vote = self.__parse_category_vote(
+                    config.get(__prefix + "_douban")
+                )
+                __tmdb_vote = self.__parse_category_vote(
+                    config.get(__prefix + "_tmdb")
+                )
+                if __douban_vote is not None or __tmdb_vote is not None:
+                    self._cat_tv_rules[__category] = {
+                        "douban": __douban_vote,
+                        "tmdb": __tmdb_vote,
+                    }
+            self._cat_movie_rules = self.__parse_movie_category_rules(
+                config.get("cat_movie_rules")
+            )
 
             self._migrate_from_url = config.get("migrate_from_url", "")
             self._migrate_api_token = config.get("migrate_api_token", "")
@@ -772,6 +929,272 @@ class DoubanRankPlus2(_PluginBase):
                                 }
                             ],
                         },
+                            {
+                            "component": "VRow",
+                            "props": {
+                                "cols": 12
+                            },
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 12
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VAlert",
+                                            "props": {
+                                                "type": "info",
+                                                "variant": "tonal"
+                                            },
+                                            "content": [
+                                                {
+                                                    "component": "p",
+                                                    "text": "分类型评分阈值：先判断作品属于哪个分类，再用该分类的阈值按上面的达标模式判定（达标就订阅，不达标就跳过）。剧集分类优先级：综艺 > 动漫 > 日韩剧 > 国产剧 > 欧美剧（综艺按豆瓣的综艺标记判断，动漫按类型“动画”判断，其余按制片国家判断）；电影按 TMDB 分类（作品类型）自定义规则，可写多条，行序优先、第一条命中的生效。"
+                                                },
+                                                {
+                                                    "component": "p",
+                                                    "text": "填写方式：留空 = 该分类沿用统一规则；填数字 = 该分类用这个分数；填 0 = 该分类此项不设门槛（该项不参与判定）。未命中任何分类的条目一律按统一规则处理。"
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                            },
+                            {
+                            "component": "VRow",
+                            "props": {
+                                "cols": 12,
+                                "md": 6
+                            },
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 12,
+                                        "md": 6
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
+                                                "model": "cat_enabled",
+                                                "label": "启用分类型评分阈值（未命中的分类走统一规则）"
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                            },
+                            {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 6,
+                                        "md": 3
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "cat_variety_douban",
+                                                "label": "综艺 豆瓣评分",
+                                                "placeholder": "留空=统一规则"
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 6,
+                                        "md": 3
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "cat_variety_tmdb",
+                                                "label": "综艺 TMDB评分",
+                                                "placeholder": "留空=统一规则"
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 6,
+                                        "md": 3
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "cat_anime_douban",
+                                                "label": "动漫 豆瓣评分",
+                                                "placeholder": "留空=统一规则"
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 6,
+                                        "md": 3
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "cat_anime_tmdb",
+                                                "label": "动漫 TMDB评分",
+                                                "placeholder": "留空=统一规则"
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                            },
+                            {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 6,
+                                        "md": 3
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "cat_cn_tv_douban",
+                                                "label": "国产剧 豆瓣评分",
+                                                "placeholder": "留空=统一规则"
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 6,
+                                        "md": 3
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "cat_cn_tv_tmdb",
+                                                "label": "国产剧 TMDB评分",
+                                                "placeholder": "留空=统一规则"
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 6,
+                                        "md": 3
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "cat_jk_tv_douban",
+                                                "label": "日韩剧 豆瓣评分",
+                                                "placeholder": "留空=统一规则"
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 6,
+                                        "md": 3
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "cat_jk_tv_tmdb",
+                                                "label": "日韩剧 TMDB评分",
+                                                "placeholder": "留空=统一规则"
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                            },
+                            {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 6,
+                                        "md": 3
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "cat_west_tv_douban",
+                                                "label": "欧美剧 豆瓣评分",
+                                                "placeholder": "留空=统一规则"
+                                            }
+                                        }
+                                    ]
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 6,
+                                        "md": 3
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "cat_west_tv_tmdb",
+                                                "label": "欧美剧 TMDB评分",
+                                                "placeholder": "留空=统一规则"
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                            },
+                            {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {
+                                        "cols": 12
+                                    },
+                                    "content": [
+                                        {
+                                            "component": "VTextarea",
+                                            "props": {
+                                                "model": "cat_movie_rules",
+                                                "label": "电影分类规则（TMDB 分类，每行一条，行序优先）",
+                                                "placeholder": "恐怖: 6.5/5.0",
+                                                "hint": "格式：分类名: 豆瓣阈值/TMDB阈值。例如 恐怖: 6.5/5.0（豆瓣6.5、TMDB5.0）、动画: 8.0（只设豆瓣）、纪录片: /7.0（只设TMDB）、西部: 0/0（两项都不设门槛）；一条规则可写多个分类名，用 / 分隔，如 恐怖/惊悚: 6.5。可选分类：" + self._MOVIE_GENRE_HINT,
+                                                "persistentHint": True
+                                            }
+                                        }
+                                    ]
+                                }
+                            ]
+                            },
                         {
                             "component": "VRow",
                             "props": {"cols": 12, "md": 6},
@@ -1018,6 +1441,18 @@ class DoubanRankPlus2(_PluginBase):
                 "low_reputation_margin": "0.5",
                 "notify": True,
                 "title_aliases": "",
+                "cat_enabled": True,
+                "cat_variety_douban": "",
+                "cat_variety_tmdb": "",
+                "cat_anime_douban": "",
+                "cat_anime_tmdb": "",
+                "cat_cn_tv_douban": "",
+                "cat_cn_tv_tmdb": "",
+                "cat_jk_tv_douban": "",
+                "cat_jk_tv_tmdb": "",
+                "cat_west_tv_douban": "",
+                "cat_west_tv_tmdb": "",
+                "cat_movie_rules": "",
                 "history_type": HistoryDataType.LATEST.value,
                 "is_exit_ip_rate_limit": False,
                 "migrate_from_url": "",
@@ -1202,6 +1637,7 @@ class DoubanRankPlus2(_PluginBase):
 
         status = history.get("status")
         unique = history.get("unique")
+        category_text = str(history.get("category") or "").strip() or "统一规则"
 
         if (
             tmdbid
@@ -1304,6 +1740,11 @@ class DoubanRankPlus2(_PluginBase):
                                     "component": "VCardText",
                                     "props": {"class": "pa-0 px-2"},
                                     "text": f"状态: {status}",
+                                },
+                                {
+                                    "component": "VCardText",
+                                    "props": {"class": "pa-0 px-2"},
+                                    "text": f"分类: {category_text}",
                                 },
                             ],
                         },
@@ -1527,6 +1968,8 @@ class DoubanRankPlus2(_PluginBase):
             "low_reputation_margin": str(self._low_reputation_margin),
             "notify": self._notify,
             "title_aliases": self._title_aliases_raw,
+            "cat_enabled": self._cat_enabled,
+            **self._cat_raw,
             "release_year": str(self._release_year),
             "sleep_time": f"{self._min_sleep_time},{self._max_sleep_time}",
             "history_type": self._history_type,
@@ -2156,20 +2599,219 @@ class DoubanRankPlus2(_PluginBase):
         self._douban_star_cache[cache_key] = stats
         return stats
 
+
+    @staticmethod
+    def __parse_category_vote(value: Any) -> Optional[float]:
+        """
+        解析分类阈值：留空=沿用统一规则(None)，0=该源不设门槛，其余为具体分数。
+        """
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        try:
+            vote = float(text)
+        except (TypeError, ValueError):
+            return None
+        if vote <= 0:
+            return 0.0
+        return min(vote, 10.0)
+
+    @staticmethod
+    def __normalize_genre_name(name: Any) -> str:
+        """归一化类型名：去空白与“片/类”后缀，并把豆瓣独有类型归并到 TMDB 分类。"""
+        text = str(name or "").strip().replace(" ", "")
+        if not text:
+            return ""
+        # 原名本身就是已知分类（如“纪录片”）时不做后缀裁剪，避免误伤
+        candidates = [text]
+        for suffix in ("片", "类", "剧"):
+            if len(text) > 1 and text.endswith(suffix):
+                candidates.append(text[: -len(suffix)])
+        for candidate in candidates:
+            if candidate in DoubanRankPlus2._KNOWN_GENRES:
+                return DoubanRankPlus2._GENRE_ALIASES.get(candidate, candidate)
+        resolved = candidates[-1] if len(candidates) > 1 else text
+        return DoubanRankPlus2._GENRE_ALIASES.get(resolved, resolved)
+
+    def __parse_movie_category_rules(
+        self, raw_value: Any
+    ) -> List[Tuple[Set[str], Dict[str, Optional[float]], str]]:
+        """
+        解析电影分类规则（每行一条，行序优先）：
+            恐怖: 6.5/5.0    → 豆瓣 6.5、TMDB 5.0
+            动画: 8.0        → 只设豆瓣，TMDB 沿用统一规则
+            纪录片: /7.0     → 只设 TMDB，豆瓣沿用统一规则
+            西部: 0/0        → 该分类两源都不设门槛
+        """
+        rules: List[Tuple[Set[str], Dict[str, Optional[float]], str]] = []
+        if not raw_value:
+            return rules
+        for line in str(raw_value).splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if ":" in line:
+                name_part, value_part = line.split(":", 1)
+            elif "：" in line:
+                name_part, value_part = line.split("：", 1)
+            else:
+                parts = line.split(None, 1)
+                name_part = parts[0]
+                value_part = parts[1] if len(parts) > 1 else ""
+            names = {
+                self.__normalize_genre_name(part)
+                for part in re.split(r"[/、,，|]", name_part)
+            }
+            names.discard("")
+            if not names:
+                logger.warning(f"电影分类规则缺少分类名，已忽略：{line}")
+                continue
+            value_parts = [
+                part.strip()
+                for part in re.split(r"[/|，,\s]+", value_part.strip())
+            ]
+            douban_vote = self.__parse_category_vote(
+                value_parts[0] if value_parts else None
+            )
+            tmdb_vote = self.__parse_category_vote(
+                value_parts[1] if len(value_parts) > 1 else None
+            )
+            if douban_vote is None and tmdb_vote is None:
+                logger.warning(f"电影分类规则未设置阈值，已忽略：{line}")
+                continue
+            rules.append(
+                (names, {"douban": douban_vote, "tmdb": tmdb_vote}, line)
+            )
+        return rules
+
+    def __get_cached_douban_info(
+        self, doubanid: str | None
+    ) -> Dict[str, Any] | None:
+        """读取本轮已缓存的豆瓣详情（不发起请求）。"""
+        if not doubanid:
+            return None
+        info = self._douban_info_cache.get(str(doubanid))
+        return info if isinstance(info, dict) and info else None
+
+    def __get_douban_genres_regions(
+        self, doubanid: str | None
+    ) -> Tuple[List[str], List[str], bool]:
+        """从缓存的豆瓣详情提取 (类型列表, 制片国家列表, 是否综艺)。"""
+        info = self.__get_cached_douban_info(doubanid)
+        if not info:
+            return [], [], False
+        genres = []
+        for genre in info.get("genres") or []:
+            name = self.__normalize_genre_name(genre)
+            if name:
+                genres.append(name)
+        regions = [
+            str(region).strip()
+            for region in (info.get("countries") or [])
+            if str(region).strip()
+        ]
+        return genres, regions, bool(info.get("is_show"))
+
+    def __match_tv_category(
+        self, genres: List[str], regions: List[str], is_show: bool
+    ) -> Optional[str]:
+        """剧集分类：综艺 > 动漫 > 日韩剧 > 国产剧 > 欧美剧；未命中返回 None。"""
+        genre_set = set(genres)
+        region_set = set(regions)
+        if is_show or self._VARIETY_GENRES & genre_set:
+            return "variety"
+        if self._ANIME_GENRES & genre_set:
+            return "anime"
+        if self._JK_REGIONS & region_set:
+            return "jk_tv"
+        if self._CN_REGIONS & region_set:
+            return "cn_tv"
+        if self._WEST_REGIONS & region_set:
+            return "west_tv"
+        return None
+
+    def __get_effective_thresholds(
+        self, doubanid: str | None, mtype: MediaType | None
+    ) -> Tuple[float, float, Optional[str]]:
+        """
+        返回该作品生效的 (豆瓣阈值, TMDB阈值, 分类名)。
+        命中分类规则时用分类阈值，否则沿用统一规则；阈值为 0 表示该源不设门槛。
+        """
+        if not self._cat_enabled:
+            return self._douban_vote, self._vote, None
+        genres, regions, is_show = self.__get_douban_genres_regions(doubanid)
+        if not genres and not regions and not is_show:
+            return self._douban_vote, self._vote, None
+
+        is_tv = mtype == MediaType.TV
+        if mtype in (None, MediaType.UNKNOWN):
+            info = self.__get_cached_douban_info(doubanid) or {}
+            is_tv = bool(info.get("is_tv"))
+
+        rule: Optional[Dict[str, Optional[float]]] = None
+        category_name: Optional[str] = None
+        if is_tv:
+            category = self.__match_tv_category(genres, regions, is_show)
+            if category:
+                rule = self._cat_tv_rules.get(category)
+                category_name = self._CATEGORY_NAMES.get(category)
+        else:
+            # 电影：按规则行序匹配，第一条命中的生效
+            genre_set = set(genres)
+            for names, candidate, _raw in self._cat_movie_rules:
+                if names & genre_set:
+                    rule = candidate
+                    category_name = "、".join(sorted(names & genre_set))
+                    break
+
+        douban_vote = self._douban_vote
+        tmdb_vote = self._vote
+        if rule:
+            if rule.get("douban") is not None:
+                douban_vote = rule["douban"]
+            if rule.get("tmdb") is not None:
+                tmdb_vote = rule["tmdb"]
+        return douban_vote, tmdb_vote, category_name
+
+    def __get_min_douban_threshold(self) -> float:
+        """
+        所有已配置豆瓣阈值中的最小值，用于早筛第一层的保守拒绝。
+        任一类阈值为 0（不设门槛）时返回 0，表示不做零请求早筛。
+        """
+        if not self._cat_enabled:
+            return self._douban_vote
+        candidates = [self._douban_vote]
+        for rule in self._cat_tv_rules.values():
+            if rule.get("douban") is not None:
+                candidates.append(rule["douban"])
+        for _names, rule, _raw in self._cat_movie_rules:
+            if rule.get("douban") is not None:
+                candidates.append(rule["douban"])
+        return min(candidates) if candidates else self._douban_vote
+
     def __is_low_reputation(
-        self, doubanid: str | None, mtype: MediaType | None, douban_vote: float
+        self,
+        doubanid: str | None,
+        mtype: MediaType | None,
+        douban_vote: float,
+        threshold: float | None = None,
     ) -> bool:
         """
         低口碑判定：仅对“评分刚过阈值”的边界样本查询星级分布，
         1~2 星占比超过上限则判定为低口碑；查询失败时放行。
+        阈值取该作品分类规则生效后的豆瓣阈值。
         """
+        if threshold is None:
+            threshold = self._douban_vote
         if not self._low_reputation_enabled or not doubanid:
             return False
-        if self._douban_vote <= 0 or douban_vote < self._douban_vote:
+        if threshold <= 0 or douban_vote < threshold:
             return False
         if (
             self._low_reputation_margin > 0
-            and douban_vote >= self._douban_vote + self._low_reputation_margin
+            and douban_vote >= threshold + self._low_reputation_margin
         ):
             return False
         stats = self.__get_douban_star_stats(doubanid, mtype)
@@ -2197,14 +2839,19 @@ class DoubanRankPlus2(_PluginBase):
         if self._vote_strategy not in {"both", "douban"}:
             return None, 0.0, 0, ""
 
-        # 第一层：RSS 描述自带评分且已低于阈值，零请求直接拒绝
+        # 第一层：RSS 自带评分且低于“所有已配置阈值中的最小值”，零请求直接拒绝
         rss_vote_value = self.__safe_float(rss_vote)
-        if 0 < rss_vote_value <= 10 and rss_vote_value < self._douban_vote:
+        min_douban_vote = self.__get_min_douban_threshold()
+        if (
+            min_douban_vote > 0
+            and 0 < rss_vote_value <= 10
+            and rss_vote_value < min_douban_vote
+        ):
             return (
                 Status.RATING_NOT_MATCH,
                 rss_vote_value,
                 0,
-                f"RSS 豆瓣评分 {rss_vote_value:.1f} 低于阈值 {self._douban_vote}",
+                f"RSS 豆瓣评分 {rss_vote_value:.1f} 低于阈值 {min_douban_vote}",
             )
 
         # 第二层：需要评价人数（或 RSS 无评分）时查询豆瓣详情，本轮缓存复用
@@ -2218,16 +2865,22 @@ class DoubanRankPlus2(_PluginBase):
                 count,
                 f"豆瓣评价人数 {count} 低于下限 {self._min_douban_count}",
             )
-        if vote < self._douban_vote:
+        # 按分类取生效阈值：分类规则可以比统一规则更严，也可以更松
+        douban_threshold, _tmdb_threshold, category_name = (
+            self.__get_effective_thresholds(doubanid, mtype)
+        )
+        self._last_category_name = category_name
+        if douban_threshold > 0 and vote < douban_threshold:
             return (
                 Status.RATING_NOT_MATCH,
                 vote,
                 count,
-                f"豆瓣评分 {vote:.1f} 低于阈值 {self._douban_vote}",
+                f"{category_name + ' | ' if category_name else ''}豆瓣评分 {vote:.1f} "
+                f"{vote:.1f} 低于阈值 {douban_threshold}",
             )
 
         # 第三层：边界样本的低口碑判定（1-2 星占比）
-        if self.__is_low_reputation(doubanid, mtype, vote):
+        if self.__is_low_reputation(doubanid, mtype, vote, douban_threshold):
             return (
                 Status.RATING_NOT_MATCH,
                 vote,
@@ -2242,22 +2895,30 @@ class DoubanRankPlus2(_PluginBase):
         tmdb_count: int,
         douban_vote: float,
         douban_count: int,
+        douban_threshold: Optional[float] = None,
+        tmdb_threshold: Optional[float] = None,
+        category_name: Optional[str] = None,
     ) -> Tuple[Status | None, str, bool]:
         """
         按评分策略评估豆瓣与 TMDB 两个评分源。
+        阈值取该作品分类规则生效后的值；阈值为 0 表示该源不参与判定。
         返回 (拒绝状态, 说明, 是否需要走未出分策略)。
         """
+        if douban_threshold is None:
+            douban_threshold = self._douban_vote
+        if tmdb_threshold is None:
+            tmdb_threshold = self._vote
         results: Dict[str, str] = {}
-        if self.__is_tmdb_gate_enabled():
+        if self.__is_tmdb_gate_enabled() and tmdb_threshold > 0:
             if tmdb_vote <= 0:
                 results["tmdb"] = "unknown"
             elif self._min_tmdb_count > 0 and tmdb_count < self._min_tmdb_count:
                 results["tmdb"] = "count"
-            elif tmdb_vote < self._vote:
+            elif tmdb_vote < tmdb_threshold:
                 results["tmdb"] = "score"
             else:
                 results["tmdb"] = "pass"
-        if self.__is_douban_gate_enabled():
+        if self.__is_douban_gate_enabled() and douban_threshold > 0:
             if douban_vote <= 0:
                 results["douban"] = "unknown"
             elif (
@@ -2265,7 +2926,7 @@ class DoubanRankPlus2(_PluginBase):
                 and douban_count < self._min_douban_count
             ):
                 results["douban"] = "count"
-            elif douban_vote < self._douban_vote:
+            elif douban_vote < douban_threshold:
                 results["douban"] = "score"
             else:
                 results["douban"] = "pass"
@@ -2284,10 +2945,10 @@ class DoubanRankPlus2(_PluginBase):
                         f"豆瓣评价人数 {douban_count} 低于下限 "
                         f"{self._min_douban_count}"
                     )
-                return f"豆瓣评分 {douban_vote:.1f} 低于阈值 {self._douban_vote}"
+                return f"豆瓣评分 {douban_vote:.1f} 低于阈值 {douban_threshold}"
             if __state(key) == "count":
                 return f"TMDB票数 {tmdb_count} 低于下限 {self._min_tmdb_count}"
-            return f"TMDB评分 {tmdb_vote:.1f} 低于阈值 {self._vote}"
+            return f"TMDB评分 {tmdb_vote:.1f} 低于阈值 {tmdb_threshold}"
 
         def __summary() -> str:
             parts = []
@@ -2303,7 +2964,8 @@ class DoubanRankPlus2(_PluginBase):
                     if tmdb_vote > 0
                     else "TMDB未出分"
                 )
-            return "，".join(parts)
+            text = "，".join(parts)
+            return f"{category_name} | {text}" if category_name else text
 
         fails = [key for key in enabled if __state(key) in {"score", "count"}]
         passes = [key for key in enabled if __state(key) == "pass"]
@@ -2489,6 +3151,7 @@ class DoubanRankPlus2(_PluginBase):
                     "tmdbid": payload.get("tmdbid"),
                     "tmdb_vote": payload.get("vote"),
                     "douban_vote": __douban_vote,
+                    "category": payload.get("category"),
                 }
             )
 
@@ -2587,6 +3250,7 @@ class DoubanRankPlus2(_PluginBase):
                                 vote=gate_vote,
                                 year=year,
                                 doubanid=douban_id,
+                                category=self._last_category_name,
                             )
                         )
                         self.__remove_retryable_history(history, unique_flag)
@@ -2618,7 +3282,13 @@ class DoubanRankPlus2(_PluginBase):
                     if not mediainfo:
                         logger.warn(f"未识别到 {title} 的媒体信息")
                         history_payload = DoubanRankPlus2.__get_history_unrecognized_payload(
-                            title, unique_flag, year, douban_id
+                            title,
+                            unique_flag,
+                            year,
+                            douban_id,
+                            category=self.__get_effective_thresholds(
+                                douban_id, mtype
+                            )[2],
                         )
                         if should_retry:
                             history_payload["status"] = Status.RETRY_LATER.value
@@ -2753,6 +3423,7 @@ class DoubanRankPlus2(_PluginBase):
                         ).strftime("%Y-%m-%d %H:%M:%S"),
                         "vote": mediainfo.vote_average,
                         "status": status.value,
+                        "category": self._last_category_name,
                     }
                     __record_history(history_payload)
                     if self.__is_retryable_status(status.value):
@@ -2836,7 +3507,11 @@ class DoubanRankPlus2(_PluginBase):
         title = str(item.get("title") or "").strip() or "未知"
         year = str(item.get("year") or "").strip()
         name = f"{title} ({year})" if year else title
-        parts = [f"[{type_text}] {name}" if type_text else name]
+        category_text = str(item.get("category") or "").strip()
+        tag = type_text
+        if category_text:
+            tag = f"{type_text}·{category_text}" if type_text else category_text
+        parts = [f"[{tag}] {name}" if tag else name]
 
         try:
             douban_vote = float(item.get("douban_vote") or 0)
@@ -2962,6 +3637,7 @@ class DoubanRankPlus2(_PluginBase):
             return Status.YEAR_NOT_MATCH
 
         # 评分过滤：豆瓣 + TMDB 双评分，按策略（同时达标/任一达标/单源）判定。
+        self._last_category_name = None
         # 电影使用作品评分；剧集有明确季号时必须使用当前季评分，不能用整部系列总评分代替。
         if self.__is_tmdb_gate_enabled() or self.__is_douban_gate_enabled():
             tmdb_vote = 0.0
@@ -2984,12 +3660,27 @@ class DoubanRankPlus2(_PluginBase):
                 douban_id, mediainfo.type
             )
 
+            (
+                __douban_threshold,
+                __tmdb_threshold,
+                __category_name,
+            ) = self.__get_effective_thresholds(douban_id, mediainfo.type)
+            self._last_category_name = __category_name
+            if __category_name:
+                logger.debug(
+                    f"{mediainfo.title_year} 命中分类规则：{__category_name}"
+                    f"（豆瓣阈值 {__douban_threshold}、TMDB阈值 {__tmdb_threshold}）"
+                )
+
             gate_status, gate_reason, need_unrated = (
                 self.__evaluate_rating_gate(
                     tmdb_vote=tmdb_vote,
                     tmdb_count=tmdb_count,
                     douban_vote=douban_vote,
                     douban_count=douban_count,
+                    douban_threshold=__douban_threshold,
+                    tmdb_threshold=__tmdb_threshold,
+                    category_name=__category_name,
                 )
             )
             if gate_status:
@@ -3248,6 +3939,7 @@ class DoubanRankPlus2(_PluginBase):
         unique: str,
         year: str | None = None,
         doubanid: str | None = None,
+        category: Optional[str] = None,
     ) -> HistoryPayload:
         """
         获取历史记录
@@ -3269,6 +3961,7 @@ class DoubanRankPlus2(_PluginBase):
                 tz=pytz.timezone(settings.TZ)
             ).strftime("%Y-%m-%d %H:%M:%S"),
             "vote": 0.0,
+            "category": category,
         }
         return history_payload
 
@@ -3280,10 +3973,15 @@ class DoubanRankPlus2(_PluginBase):
         vote: float,
         year: str | None = None,
         doubanid: str | None = None,
+        category: Optional[str] = None,
     ) -> HistoryPayload:
         """识别前被评分/口碑过滤拒绝的历史记录（尚无 TMDB 信息）。"""
         history_payload = DoubanRankPlus2.__get_history_unrecognized_payload(
-            title=title, unique=unique, year=year, doubanid=doubanid
+            title=title,
+            unique=unique,
+            year=year,
+            doubanid=doubanid,
+            category=category,
         )
         history_payload["status"] = status.value
         history_payload["vote"] = vote
