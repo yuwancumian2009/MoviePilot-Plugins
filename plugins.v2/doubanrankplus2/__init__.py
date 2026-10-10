@@ -89,7 +89,7 @@ class DoubanRankPlus2(_PluginBase):
     # 插件图标
     plugin_icon = ""
     # 插件版本
-    plugin_version = "1.5.0"
+    plugin_version = "1.5.1"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -165,6 +165,7 @@ class DoubanRankPlus2(_PluginBase):
     _cat_tv_rules: Dict[str, Dict[str, Optional[float]]] = {}
     _cat_movie_rules: List[Tuple[Set[str], Dict[str, Optional[float]], str]] = []
     _last_category_name: Optional[str] = None
+    _last_douban_vote_used: Optional[float] = None
 
     # 剧集分类判定顺序与显示名：综艺 > 动漫 > 日韩剧 > 国产剧 > 欧美剧
     _CATEGORY_NAMES: Dict[str, str] = {
@@ -2859,8 +2860,9 @@ class DoubanRankPlus2(_PluginBase):
         if not has_rating:
             return None, 0.0, 0, ""
         if self._min_douban_count > 0 and count < self._min_douban_count:
+            # 人数会随剧集更新增长，用可重试状态，避免被历史去重永久跳过
             return (
-                Status.RATING_NOT_MATCH,
+                Status.RATING_PENDING,
                 vote,
                 count,
                 f"豆瓣评价人数 {count} 低于下限 {self._min_douban_count}",
@@ -2922,7 +2924,9 @@ class DoubanRankPlus2(_PluginBase):
             if douban_vote <= 0:
                 results["douban"] = "unknown"
             elif (
-                self._min_douban_count > 0
+                # 人数为 0 表示未知（RSS 兜底评分），不参与人数下限校验
+                douban_count > 0
+                and self._min_douban_count > 0
                 and douban_count < self._min_douban_count
             ):
                 results["douban"] = "count"
@@ -2953,11 +2957,12 @@ class DoubanRankPlus2(_PluginBase):
         def __summary() -> str:
             parts = []
             if "douban" in results:
-                parts.append(
-                    f"豆瓣{douban_vote:.1f}分/{douban_count}人"
-                    if douban_vote > 0
-                    else "豆瓣未出分"
-                )
+                if douban_vote <= 0:
+                    parts.append("豆瓣未出分")
+                elif douban_count > 0:
+                    parts.append(f"豆瓣{douban_vote:.1f}分/{douban_count}人")
+                else:
+                    parts.append(f"豆瓣{douban_vote:.1f}分(人数未知)")
             if "tmdb" in results:
                 parts.append(
                     f"TMDB{tmdb_vote:.1f}分/{tmdb_count}票"
@@ -2971,12 +2976,20 @@ class DoubanRankPlus2(_PluginBase):
         passes = [key for key in enabled if __state(key) == "pass"]
         unknowns = [key for key in enabled if __state(key) == "unknown"]
 
+        # 仅因“评价人数/票数不足”被拦的改用可重试状态：新片的人数与票数会随时间增长，
+        # 判成“评分不符合”会被历史去重永久跳过，导致这些片子永远错过。
+        __fail_status = (
+            Status.RATING_PENDING
+            if fails and all(__state(key) == "count" for key in fails)
+            else Status.RATING_NOT_MATCH
+        )
+
         if self._vote_strategy == "any":
             if passes:
                 return None, "", False
             if fails:
                 return (
-                    Status.RATING_NOT_MATCH,
+                    __fail_status,
                     f"{__summary()}（{'、'.join(__reason(key) for key in fails)}）",
                     False,
                 )
@@ -2984,7 +2997,7 @@ class DoubanRankPlus2(_PluginBase):
 
         if fails:
             return (
-                Status.RATING_NOT_MATCH,
+                __fail_status,
                 f"{__summary()}（{'、'.join(__reason(key) for key in fails)}）",
                 False,
             )
@@ -3128,6 +3141,14 @@ class DoubanRankPlus2(_PluginBase):
         # 本次运行的统计与新增订阅，用于运行结束后推送通知
         run_status_counter: Dict[str, int] = {}
         run_added_subscriptions: List[Dict[str, Any]] = []
+        # 本次扫描全貌：榜单数 / 抓取条数 / 已处理过跳过数 / 抓取失败榜单
+        run_scan: Dict[str, Any] = {
+            "rank_total": len([__a for __a in addr_list if __a]),
+            "rank_ok": 0,
+            "rank_failed": [],
+            "items": 0,
+            "skipped": 0,
+        }
 
         def __record_history(payload: HistoryPayload) -> None:
             """写入历史记录，并统计本次运行结果（供运行结束通知使用）。"""
@@ -3142,6 +3163,9 @@ class DoubanRankPlus2(_PluginBase):
             __douban_vote, _douban_count, _has_rating = self.__get_douban_rating(
                 payload.get("doubanid"), None
             )
+            if not __douban_vote and self._last_douban_vote_used:
+                # 豆瓣详情不可用时，用 RSS 兜底评分展示
+                __douban_vote = self._last_douban_vote_used
             run_added_subscriptions.append(
                 {
                     "title": payload.get("title"),
@@ -3179,8 +3203,11 @@ class DoubanRankPlus2(_PluginBase):
                 rss_infos = self.__get_rss_info(addr)
                 if not rss_infos:
                     logger.error(f"RSS地址：{addr} ，未查询到数据")
+                    run_scan["rank_failed"].append(addr)
                     continue
                 else:
+                    run_scan["rank_ok"] += 1
+                    run_scan["items"] += len(rss_infos)
                     logger.info(
                         f"RSS地址：{addr} ，共 {len(rss_infos)} 条数据"
                     )
@@ -3220,6 +3247,7 @@ class DoubanRankPlus2(_PluginBase):
 
                     # 在集合中查找 unique_flag
                     if unique_flag in unique_flags:
+                        run_scan["skipped"] += 1
                         logger.info(
                             f"已处理过: Title: {title}, Year:{year}, DBID:{douban_id}"
                         )
@@ -3255,7 +3283,10 @@ class DoubanRankPlus2(_PluginBase):
                         )
                         self.__remove_retryable_history(history, unique_flag)
                         __record_history(history_payload)
-                        unique_flags.add(unique_flag)
+                        if self.__is_retryable_status(gate_status.value):
+                            unique_flags.discard(unique_flag)
+                        else:
+                            unique_flags.add(unique_flag)
                         continue
 
                     logger.info(
@@ -3388,6 +3419,7 @@ class DoubanRankPlus2(_PluginBase):
                                 is_exist_all=is_exist_all,
                                 missing_season=missing_season,
                                 douban_id=douban_id,
+                                rss_douban_vote=rss_info.get("douban_vote"),
                             )
                             if not meta.begin_season or i == meta.begin_season:
                                 status = __status
@@ -3400,6 +3432,7 @@ class DoubanRankPlus2(_PluginBase):
                             is_exist_all=is_exist_all,
                             missing_season=missing_season,
                             douban_id=douban_id,
+                            rss_douban_vote=rss_info.get("douban_vote"),
                         )
 
                     # 覆盖同一条目的旧可重试记录，避免历史面板不断累积。
@@ -3446,12 +3479,14 @@ class DoubanRankPlus2(_PluginBase):
         self.__send_run_notification(
             status_counter=run_status_counter,
             added_subscriptions=run_added_subscriptions,
+            scan=run_scan,
         )
 
     def __send_run_notification(
         self,
         status_counter: Dict[str, int],
         added_subscriptions: List[Dict[str, Any]],
+        scan: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         运行结束后通过 MP 通知系统推送本次执行结果。
@@ -3469,7 +3504,21 @@ class DoubanRankPlus2(_PluginBase):
                 title = "豆瓣榜单订阅完成：无新增订阅"
 
             lines: List[str] = []
-            if total:
+            if scan:
+                lines.append(
+                    f"本次扫描 {scan.get('rank_total', 0)} 个榜单，"
+                    f"抓到 {scan.get('items', 0)} 条，"
+                    f"跳过 {scan.get('skipped', 0)} 条（已处理过），"
+                    f"处理 {total} 条新条目"
+                )
+                __failed = list(scan.get("rank_failed") or [])
+                if __failed:
+                    __names = "、".join(
+                        re.sub(r"^https?://[^/]+", "", str(__u)) or str(__u)
+                        for __u in __failed
+                    )
+                    lines.append(f"· 抓取失败 {len(__failed)} 个榜单：{__names}")
+            elif total:
                 lines.append(f"本次共处理 {total} 条榜单条目")
             for status in Status:
                 count = status_counter.get(status.value, 0)
@@ -3597,6 +3646,7 @@ class DoubanRankPlus2(_PluginBase):
         is_exist_all: bool,
         missing_season: list[int] | None,
         douban_id: str | None = None,
+        rss_douban_vote: Any = None,
     ) -> Status:
 
         if is_exist_all:
@@ -3659,6 +3709,17 @@ class DoubanRankPlus2(_PluginBase):
             douban_vote, douban_count, _douban_ok = self.__get_douban_rating(
                 douban_id, mediainfo.type
             )
+            if not _douban_ok:
+                # 豆瓣详情拿不到（无 ID / 未出分 / 限流）时，用 RSS 自带的豆瓣评分兜底；
+                # 此时评价人数未知（记为 0），不参与人数下限校验
+                __rss_vote = self.__safe_float(rss_douban_vote)
+                if 0 < __rss_vote <= 10:
+                    douban_vote, douban_count = __rss_vote, 0
+                    logger.info(
+                        f"{mediainfo.title_year} 豆瓣详情不可用，"
+                        f"改用 RSS 豆瓣评分 {__rss_vote:.1f}（评价人数未知）参与判定"
+                    )
+            self._last_douban_vote_used = douban_vote if douban_vote > 0 else None
 
             (
                 __douban_threshold,
@@ -3763,12 +3824,26 @@ class DoubanRankPlus2(_PluginBase):
         获取RSS
         """
         try:
-            if self._proxy:
-                ret = RequestUtils(
-                    timeout=240, proxies=settings.PROXY or {}
-                ).get_res(addr)
-            else:
-                ret = RequestUtils(timeout=240).get_res(addr)
+            # RSSHub 偶尔读超时：缩短单次超时并重试一次，避免整个榜单被静默丢掉
+            ret = None
+            for __attempt in range(2):
+                try:
+                    if self._proxy:
+                        ret = RequestUtils(
+                            timeout=90, proxies=settings.PROXY or {}
+                        ).get_res(addr)
+                    else:
+                        ret = RequestUtils(timeout=90).get_res(addr)
+                except Exception as __fetch_err:
+                    logger.warn(
+                        f"获取RSS异常（第 {__attempt + 1} 次）：{addr}，{__fetch_err}"
+                    )
+                    ret = None
+                if ret:
+                    break
+                if __attempt == 0:
+                    logger.info(f"RSS 抓取失败，3 秒后重试一次：{addr}")
+                    time.sleep(3)
             if not ret:
                 return []
             ret_xml = ret.text
@@ -3790,8 +3865,15 @@ class DoubanRankPlus2(_PluginBase):
                         logger.warn("条目标题和链接均为空，无法处理")
                         continue
 
-                    # 豆瓣ID
-                    found_doubanid = re.findall(r"/(\d+)/", str(link) or "")
+                    # 豆瓣ID：兼容 /subject/<id>/、/subject/<id> 以及
+                    # /doubanapp/dispatch/movie/<id>（结尾无斜杠，旧正则解析不出）等格式
+                    found_doubanid = re.findall(
+                        r"/(?:subject|movie|tv)/(\d+)", str(link) or ""
+                    )
+                    if not found_doubanid:
+                        found_doubanid = re.findall(
+                            r"/(\d{5,})(?:[/?#]|$)", str(link) or ""
+                        )
                     if found_doubanid:
                         doubanid = found_doubanid[0]
                         if not str(doubanid).isdigit():
