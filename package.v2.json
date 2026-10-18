@@ -111,13 +111,14 @@
     "name": "豆瓣Cookie保活",
     "description": "自动从 CookieCloud 拉取豆瓣 Cookie，检测作废/失效，低频保活并同步给豆瓣相关插件，失效即时通知",
     "labels": "工具",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "icon": "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png",
     "author": "yuwancumian2009",
     "level": 1,
     "release": true,
     "v3": false,
     "history": {
+      "v1.0.1": "加固失效判定：被豆瓣重定向到登录/验证页时也判为失效，避免把风控页当有效；「仅从 CookieCloud 刷新」现在真正优先取用 CookieCloud 而非手动/缓存；修正插件页告警组件类型。",
       "v1.0.0": "把豆瓣 Cookie 的采集、校验、保活、分发、报警串成一条链路：从 CookieCloud 自动取豆瓣 Cookie，按豆瓣服务端作废信号（dbcl2=deleted / /mine/ 403）准确判定，低频保活并捕获续期 Cookie，校验通过后写入 DoubanFolio、DoubanDoulist 等插件并重载生效，状态翻转时推送通知；插件页展示来源、UID、Cookie 指纹、同步结果与最近 30 次检测记录。"
     }
   }

@@ -66,7 +66,7 @@ class DoubanCookieKeeper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     # 插件作者
     plugin_author = "yuwancumian2009"
     # 作者主页
@@ -372,7 +372,7 @@ class DoubanCookieKeeper(_PluginBase):
         if details:
             content.append({
                 "component": "VAlert",
-                "props": {"type": "secondary", "variant": "tonal", "class": "mt-2",
+                "props": {"type": "info", "variant": "tonal", "class": "mt-2",
                           "text": "最近一次探测：" + "；".join(f"{k}={v}" for k, v in details.items())},
             })
 
@@ -559,10 +559,16 @@ class DoubanCookieKeeper(_PluginBase):
     def _candidates(self, force_pull: bool = False) -> List[Tuple[str, str]]:
         out: List[Tuple[str, str]] = []
         self._last_cc_msg = ""
+        # 显式要求从 CookieCloud 刷新时，把它排在手动/缓存之前
+        if force_pull and self._use_cookiecloud:
+            cc, msg = self._cookiecloud_cookie(force=True)
+            if cc:
+                out.append(("cookiecloud", cc))
+            self._last_cc_msg = msg
         if self._manual_cookie:
             out.append(("manual", self._manual_cookie))
-        if self._use_cookiecloud:
-            cc, msg = self._cookiecloud_cookie(force=force_pull)
+        if self._use_cookiecloud and not force_pull:
+            cc, msg = self._cookiecloud_cookie(force=False)
             if cc:
                 out.append(("cookiecloud", cc))
             self._last_cc_msg = msg
@@ -715,6 +721,12 @@ class DoubanCookieKeeper(_PluginBase):
         if mine_status == 403:
             result.update(reason="访问「我的豆瓣」返回 403：登录态已失效或被豆瓣风控",
                           details=details, signal="mine=403")
+            return result
+        loc_low = (mine_loc or "").lower()
+        if mine_status in (301, 302, 303, 307) and any(
+                k in loc_low for k in ("sec.douban.com", "accounts.douban.com", "passport", "login")):
+            result.update(reason="豆瓣把「我的豆瓣」重定向到登录/验证页，登录态已失效",
+                          details=details, signal=f"mine={mine_status}→verify")
             return result
         if mine_status == 0:
             result.update(reason="无法确认登录态（「我的豆瓣」请求失败）",
