@@ -92,5 +92,19 @@
       "v1.1.0": "改为只比对 NAS 本地 strm 文件，不再访问存储链/云端（规避 115 风控）；新增 strm 根目录与路径前缀映射配置。",
       "v1.0.0": "首次发布：体检整理记录与媒体文件不一致的幽灵记录，支持一键清理（仅删记录、不删文件）。"
     }
+  },
+  "SearchChannelCheckin": {
+    "name": "搜索渠道签到",
+    "description": "给各个搜索渠道（Dian115 / HDHaven / HDHive / 聚影 / 蜗牛）每天自动签到领积分，每渠道独立开关与模式，已签成功的当天自动跳过，支持通知与历史记录。",
+    "labels": "站点",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/searchchannelcheckin.png",
+    "author": "yuwancumian2009",
+    "level": 1,
+    "release": true,
+    "v3": false,
+    "history": {
+      "v1.0.0": "从「网盘订阅助手」拆出的独立签到插件：支持 Dian115（普通/运气签到+幸运转盘）、HDHaven（普通/赌狗）、HDHive（普通/赌狗，WebAPI/OpenAPI 双通道）、聚影（含领奖池）、蜗牛；每渠道独立开关、模式与定时，已签到成功的渠道当天不再重复请求；签到结果可推送通知，页面提供概览/单渠道签到/历史记录。"
+    }
   }
 }
