@@ -106,5 +106,19 @@
     "history": {
       "v1.0.0": "从「网盘订阅助手」拆出的独立签到插件：支持 Dian115（普通/运气签到+幸运转盘）、HDHaven（普通/赌狗）、HDHive（普通/赌狗，WebAPI/OpenAPI 双通道）、聚影（含领奖池）、蜗牛；每渠道独立开关、模式与定时，已签到成功的渠道当天不再重复请求；签到结果可推送通知，页面提供概览/单渠道签到/历史记录。"
     }
+  },
+  "DoubanCookieKeeper": {
+    "name": "豆瓣Cookie保活",
+    "description": "自动从 CookieCloud 拉取豆瓣 Cookie，检测作废/失效，低频保活并同步给豆瓣相关插件，失效即时通知",
+    "labels": "工具",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png",
+    "author": "yuwancumian2009",
+    "level": 1,
+    "release": true,
+    "v3": false,
+    "history": {
+      "v1.0.0": "把豆瓣 Cookie 的采集、校验、保活、分发、报警串成一条链路：从 CookieCloud 自动取豆瓣 Cookie，按豆瓣服务端作废信号（dbcl2=deleted / /mine/ 403）准确判定，低频保活并捕获续期 Cookie，校验通过后写入 DoubanFolio、DoubanDoulist 等插件并重载生效，状态翻转时推送通知；插件页展示来源、UID、Cookie 指纹、同步结果与最近 30 次检测记录。"
+    }
   }
 }
