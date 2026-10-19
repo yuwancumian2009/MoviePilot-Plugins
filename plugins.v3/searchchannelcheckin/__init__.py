@@ -31,7 +31,7 @@ import pytz
 from app.sdk.config import settings
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
-from app.schemas.types import NotificationType
+from app.schemas.types import MessageType
 
 from .vendor.search.dian115.client import Dian115Client, Dian115Error
 from .vendor.search.hdhaven.client import HDHavenClient, HDHavenError
@@ -141,7 +141,7 @@ class SearchChannelCheckin(_PluginBase):
     plugin_name = "搜索渠道签到"
     plugin_desc = "给 Dian115 / HDHaven / HDHive / 聚影 / 蜗牛 等搜索渠道每天自动签到。"
     plugin_icon = "mdi-calendar-check-outline"
-    plugin_version = "2.0.1"
+    plugin_version = "2.0.2"
     plugin_author = "yuwancumian2009"
     author_url = "https://github.com/yuwancumian2009"
     plugin_config_prefix = "searchchannelcheckin_"
@@ -925,7 +925,7 @@ class SearchChannelCheckin(_PluginBase):
             lines.append(f"{mark} {item.get('channel_name')}：{tail}{change_text}")
         try:
             self.post_message(
-                mtype=NotificationType.Plugin,
+                mtype=MessageType.Plugin,
                 title="搜索渠道签到",
                 text="\n".join(lines),
             )
