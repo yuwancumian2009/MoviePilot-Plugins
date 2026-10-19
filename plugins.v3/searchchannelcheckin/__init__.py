@@ -141,7 +141,7 @@ class SearchChannelCheckin(_PluginBase):
     plugin_name = "搜索渠道签到"
     plugin_desc = "给 Dian115 / HDHaven / HDHive / 聚影 / 蜗牛 等搜索渠道每天自动签到。"
     plugin_icon = "mdi-calendar-check-outline"
-    plugin_version = "2.0.0"
+    plugin_version = "2.0.1"
     plugin_author = "yuwancumian2009"
     author_url = "https://github.com/yuwancumian2009"
     plugin_config_prefix = "searchchannelcheckin_"
