@@ -22,7 +22,7 @@ from typing import Any, Dict, Optional
 from urllib.parse import quote, unquote, urlparse, urlsplit
 
 from app.sdk.config import settings
-from app.helper.browser import PlaywrightHelper
+from app.adapters.network.browser import PlaywrightHelper
 from app.sdk.logging import logger
 from curl_cffi import requests
 
@@ -38,7 +38,7 @@ except ImportError:
 
 try:
     # v2 原生 / v3 兼容别名：平台通用的页面挑战识别（标题 + 选择器）
-    from app.helper.cloudflare import under_challenge as _platform_under_challenge
+    from app.adapters.network.cloudflare import under_challenge as _platform_under_challenge
 except ImportError:
     _platform_under_challenge = None
 

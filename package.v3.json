@@ -16,12 +16,13 @@
     "name": "幽灵整理记录",
     "description": "比对 NAS 本地媒体库文件（strm 或本地实体视频文件），体检「整理记录还在、媒体文件已丢失」的幽灵记录，支持一键清理；诊断报告后台生成并推送到通知渠道，快速定位是配置问题还是媒体真被删。",
     "labels": "系统",
-    "version": "2.0.0",
+    "version": "2.0.1",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png",
     "author": "yuwancumian2009",
     "level": 1,
     "release": true,
     "history": {
+      "v2.0.1": "迁移 V3 告警枚举 MessageType、浏览器/CF 适配器到 app.adapters.network，消除兼容告警。",
       "v2.0.0": "MoviePilot V3 专用分支：导入迁移到 app.sdk 稳定出口；清理整理记录改用 V3 官方 TransferHistoryOper（自带写事务），不再直接操作 ORM 会话。"
     },
     "system_version": ">=3.0.0"
@@ -30,12 +31,13 @@
     "name": "搜索渠道签到",
     "description": "给各个搜索渠道（Dian115 / HDHaven / HDHive / 聚影 / 蜗牛）每天自动签到领积分，每渠道独立开关与模式，已签成功的当天自动跳过，支持通知与历史记录。",
     "labels": "站点",
-    "version": "2.0.1",
+    "version": "2.0.2",
     "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/searchchannelcheckin.png",
     "author": "yuwancumian2009",
     "level": 1,
     "release": true,
     "history": {
+      "v2.0.2": "迁移 V3 告警枚举 MessageType、浏览器/CF 适配器到 app.adapters.network，消除兼容告警。",
       "v2.0.1": "requirements 放宽为实际可安装的下限（torf>=4.3.1、curl_cffi>=0.7.0），修复 Python 3.14 环境下 torf 5.x 无可用包导致依赖恢复失败、插件无法加载。",
       "v2.0.0": "MoviePilot V3 专用分支：导入迁移到 app.sdk 稳定出口；补充 requirements.txt（torf、curl_cffi），解决 V3 精简镜像缺依赖导致插件无法加载。"
     },
@@ -45,12 +47,13 @@
     "name": "豆瓣Cookie保活",
     "description": "豆瓣 Cookie 保活：进程层限速+403熔断避免把 CK 打死，dbcl2 到期倒计时预警",
     "labels": "工具",
-    "version": "2.0.0",
+    "version": "2.0.1",
     "icon": "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png",
     "author": "yuwancumian2009",
     "level": 1,
     "release": true,
     "history": {
+      "v2.0.1": "迁移 V3 告警枚举 MessageType，消除兼容告警。",
       "v2.0.0": "MoviePilot V3 专用分支：导入迁移到 app.sdk 稳定出口，CookieCloud 改用 V3 实际模块路径。"
     },
     "system_version": ">=3.0.0"

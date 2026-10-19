@@ -622,7 +622,7 @@ class GhostTransferCleaner(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
     # 插件版本
-    plugin_version = "2.0.0"
+    plugin_version = "2.0.1"
     # 插件作者
     plugin_author = "yuwancumian2009"
     # 作者主页
@@ -1256,7 +1256,7 @@ class GhostTransferCleaner(_PluginBase):
         内存队列，页面不开着就看不到、也不留任何记录 —— 用它等于「点了没反应」。
         """
         try:
-            self.post_message(mtype=NotificationType.Plugin, title=title, text=str(text))
+            self.post_message(mtype=MessageType.Plugin, title=title, text=str(text))
             return
         except Exception as err:
             logger.error(f"幽灵整理记录：通知链发送失败，退回页面内提示：{err}")
