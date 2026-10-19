@@ -34,12 +34,26 @@ PAGE_CSS = """
 .dck-v{font-size:15px;font-weight:600;line-height:1.35;word-break:break-all}
 .dck-sec{margin:18px 0 8px;font-size:13px;font-weight:700}
 .dck-scroll{overflow-x:auto;border:1px solid rgba(var(--v-border-color),var(--v-border-opacity));border-radius:10px}
-table.dck-tbl{width:100%;border-collapse:collapse;font-size:12.5px;min-width:560px}
+table.dck-tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+@media(min-width:601px){table.dck-tbl{min-width:560px}}
 table.dck-tbl th{text-align:left;padding:8px 10px;font-weight:600;white-space:nowrap;
   background:rgba(var(--v-theme-on-surface),.06)}
 table.dck-tbl td{padding:8px 10px;vertical-align:top;word-break:break-all;
   border-top:1px solid rgba(var(--v-border-color),calc(var(--v-border-opacity)*.6))}
 table.dck-tbl tr:nth-child(even) td{background:rgba(var(--v-theme-on-surface),.02)}
+@media(max-width:600px){
+  .dck-scroll{overflow:visible;border:0;border-radius:0}
+  table.dck-tbl{min-width:0}
+  table.dck-tbl thead{display:none}
+  table.dck-tbl tr{display:block;margin:0 0 8px;border-radius:10px;background:rgb(var(--v-theme-surface));
+    border:1px solid rgba(var(--v-border-color),var(--v-border-opacity));overflow:hidden}
+  table.dck-tbl tr:nth-child(even) td{background:transparent}
+  table.dck-tbl td{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;
+    padding:7px 10px;border:0;border-top:1px solid rgba(var(--v-border-color),calc(var(--v-border-opacity)*.5))}
+  table.dck-tbl td:first-child{border-top:0}
+  table.dck-tbl td:before{content:attr(data-label);flex:0 0 auto;font-weight:600;
+    color:rgba(var(--v-theme-on-surface),.72);white-space:nowrap}
+}
 .dck-ok{color:rgb(var(--v-theme-success));font-weight:600}
 .dck-bad{color:rgb(var(--v-theme-error));font-weight:600}
 .dck-mut{color:rgba(var(--v-theme-on-surface),.72)}
@@ -66,7 +80,7 @@ class DoubanCookieKeeper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "yuwancumian2009"
     # 作者主页
@@ -286,11 +300,11 @@ class DoubanCookieKeeper(_PluginBase):
             }
 
         content.append({"component": "VRow", "props": {"class": "mb-2"}, "content": [{
-            "component": "VCol", "props": {"cols": 12}, "content": [[
+            "component": "VCol", "props": {"cols": 12}, "content": [
                 button("立即检测并同步", "primary", "mdi-shield-check", "/check"),
                 button("仅从 CookieCloud 刷新", "secondary", "mdi-cloud-download", "/pull"),
                 button("重新同步到目标插件", "info", "mdi-sync", "/sync"),
-            ]],
+            ],
         }]})
 
         uid = state.get("uid") or ""
@@ -322,11 +336,11 @@ class DoubanCookieKeeper(_PluginBase):
                 reloaded = "已重载" if item.get("reloaded") else "—"
                 rows_html.append(
                     "<tr>"
-                    f"<td class='dck-mono'>{_esc(name)}</td>"
-                    f"<td>{status}</td>"
-                    f"<td>{_esc(reloaded)}</td>"
-                    f"<td>{_esc(item.get('note') or '')}</td>"
-                    f"<td class='dck-mut'>{_esc(item.get('at') or '')}</td>"
+                    f"<td class='dck-mono' data-label='插件'>{_esc(name)}</td>"
+                    f"<td data-label='状态'>{status}</td>"
+                    f"<td data-label='重载'>{_esc(reloaded)}</td>"
+                    f"<td data-label='说明'>{_esc(item.get('note') or '')}</td>"
+                    f"<td class='dck-mut' data-label='时间'>{_esc(item.get('at') or '')}</td>"
                     "</tr>"
                 )
             content.append({"component": "div",
@@ -344,11 +358,11 @@ class DoubanCookieKeeper(_PluginBase):
                          else '<span class="dck-bad">失效</span>')
                 rows_html.append(
                     "<tr>"
-                    f"<td class='dck-mut'>{_esc(item.get('at'))}</td>"
-                    f"<td>{badge}</td>"
-                    f"<td>{_esc(self._source_label(item.get('source')))}</td>"
-                    f"<td>{_esc(item.get('reason') or '')}</td>"
-                    f"<td class='dck-mono'>{_esc(item.get('uid') or '')}</td>"
+                    f"<td class='dck-mut' data-label='时间'>{_esc(item.get('at'))}</td>"
+                    f"<td data-label='结果'>{badge}</td>"
+                    f"<td data-label='来源'>{_esc(self._source_label(item.get('source')))}</td>"
+                    f"<td data-label='说明'>{_esc(item.get('reason') or '')}</td>"
+                    f"<td class='dck-mono' data-label='UID'>{_esc(item.get('uid') or '')}</td>"
                     "</tr>"
                 )
             content.append({"component": "div",
@@ -427,6 +441,11 @@ class DoubanCookieKeeper(_PluginBase):
         self._started_at = _now()
         threading.Thread(target=self._run_check, kwargs={"kind": kind}, daemon=True).start()
         return {"success": True, "message": f"已开始{label}，稍后刷新页面查看结果"}
+
+    def _mark_done(self):
+        """状态已落库后立即复位运行标记，通知发送慢时页面也不会一直显示执行中。"""
+        self._running = False
+        self._running_kind = ""
 
     def _run_check(self, kind: str = "run"):
         if not _run_lock.acquire(blocking=False):
@@ -511,6 +530,7 @@ class DoubanCookieKeeper(_PluginBase):
                 "uid": best.get("uid") or "",
             })
             self.save_data("state", merged)
+            self._mark_done()
 
             if self._notify and prev_valid is False:
                 self._notify_user(
@@ -537,12 +557,15 @@ class DoubanCookieKeeper(_PluginBase):
             "signal": primary.get("signal") or "",
             "details": primary.get("details") or {},
             "cc_msg": self._last_cc_msg or merged.get("cc_msg") or "",
+            "cookie_fp": self._fp(primary.get("cookie") or ""),
+            "cookie_len": len(primary.get("cookie") or ""),
         })
         merged["history"] = self._push_history(state, {
             "at": now, "valid": False, "source": primary.get("source"),
             "reason": merged["reason"], "uid": merged.get("uid") or "",
         })
         self.save_data("state", merged)
+        self._mark_done()
 
         if self._notify and self._should_alert(state, prev_valid):
             self._notify_user(
