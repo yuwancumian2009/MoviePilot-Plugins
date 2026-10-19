@@ -109,9 +109,9 @@
   },
   "DoubanCookieKeeper": {
     "name": "豆瓣Cookie保活",
-    "description": "自动从 CookieCloud 拉取豆瓣 Cookie，检测作废/失效，低频保活并同步给豆瓣相关插件，失效即时通知",
+    "description": "豆瓣 Cookie 保活：进程层限速+403熔断避免把 CK 打死，dbcl2 到期倒计时预警",
     "labels": "工具",
-    "version": "1.0.2",
+    "version": "1.2.0",
     "icon": "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png",
     "author": "yuwancumian2009",
     "level": 1,

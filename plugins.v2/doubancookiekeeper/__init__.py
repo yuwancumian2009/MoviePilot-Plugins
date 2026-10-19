@@ -1,9 +1,13 @@
 import hashlib
 import html as html_lib
+import random
 import re
 import threading
+import time
 from datetime import datetime, timedelta
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import requests
 from apscheduler.triggers.cron import CronTrigger
@@ -22,6 +26,94 @@ UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 # 用于保活的固定条目（肖申克的救赎），只读请求
 KEEPALIVE_SUBJECT = "1292052"
+
+# ------------------------------------------------------------------ 请求治理器
+# MP 里所有插件同进程，同一个豆瓣账号被多个插件并发高频访问时，豆瓣会直接返回
+# 403/429，并把登录态写成 dbcl2=deleted —— 也就是说「CK 突然失效」多半是自己
+# 把它打死的。这里在 requests.Session 层统一治理发往 douban 的请求：串行化、
+# 最小间隔 + 随机抖动、403/429 自动熔断冷却。只拦 douban 域名，不影响其它请求。
+GOV: Dict[str, Any] = {
+    "installed": False, "interval": 4.0, "cooldown": 45 * 60, "ua": "",
+    "lock": threading.Lock(), "last": 0.0, "block_until": 0.0,
+    "total": 0, "today": 0, "day": "", "tripped": 0, "last_trip": "", "last_code": 0,
+}
+
+
+def install_governor(interval: float = 4.0, cooldown_min: int = 45, ua: str = "") -> bool:
+    """幂等地把治理钩子挂到 requests.Session.request（只作用于 douban 域名）。"""
+    GOV["interval"] = max(0.0, float(interval))
+    GOV["cooldown"] = max(0, int(cooldown_min) * 60)
+    GOV["ua"] = (ua or "").strip()
+    if GOV["installed"]:
+        return True
+    try:
+        import requests.sessions as _rs
+    except Exception as err:
+        logger.warn(f"豆瓣Cookie保活：请求治理装载失败 {err}")
+        return False
+
+    orig = _rs.Session.request
+
+    def governed(self, method, url, **kwargs):
+        try:
+            host = (urlsplit(str(url)).hostname or "").lower()
+        except Exception:
+            host = ""
+        if "douban" not in host:
+            return orig(self, method, url, **kwargs)
+
+        now = time.time()
+        with GOV["lock"]:
+            if now < GOV["block_until"]:
+                left = int(GOV["block_until"] - now)
+                raise requests.exceptions.ConnectionError(
+                    f"豆瓣请求冷却中（还剩 {left} 秒），本次跳过以免加重风控")
+            wait = GOV["last"] + GOV["interval"] - now
+            if wait > 0:
+                time.sleep(wait + random.uniform(0.05, 0.45))
+            GOV["last"] = time.time()
+            day = datetime.now().strftime("%Y-%m-%d")
+            if GOV["day"] != day:
+                GOV["day"], GOV["today"] = day, 0
+            GOV["total"] += 1
+            GOV["today"] += 1
+
+        if GOV["ua"]:
+            headers = kwargs.get("headers") or {}
+            if not any(str(k).lower() == "user-agent" for k in headers):
+                headers = dict(headers)
+                headers["User-Agent"] = GOV["ua"]
+                kwargs["headers"] = headers
+
+        resp = orig(self, method, url, **kwargs)
+        GOV["last"] = time.time()
+        if getattr(resp, "status_code", 0) in (403, 429):
+            with GOV["lock"]:
+                GOV["block_until"] = time.time() + GOV["cooldown"]
+                GOV["tripped"] += 1
+                GOV["last_trip"] = _now()
+                GOV["last_code"] = resp.status_code
+            logger.warn(f"豆瓣返回 {resp.status_code}，已熔断 {GOV['cooldown'] // 60} 分钟"
+                        f"（累计 {GOV['tripped']} 次）：继续请求会把登录态彻底打死")
+        return resp
+
+    governed._dck_gov = True
+    _rs.Session.request = governed
+    GOV["installed"] = True
+    logger.info(f"豆瓣Cookie保活：请求治理已生效（最小间隔 {GOV['interval']}s，"
+                f"403/429 冷却 {GOV['cooldown'] // 60} 分钟）")
+    return True
+
+
+def governor_snapshot() -> Dict[str, Any]:
+    with GOV["lock"]:
+        return {
+            "installed": GOV["installed"], "interval": GOV["interval"],
+            "cooldown_min": GOV["cooldown"] // 60, "today": GOV["today"],
+            "total": GOV["total"], "tripped": GOV["tripped"],
+            "last_trip": GOV["last_trip"], "last_code": GOV["last_code"],
+            "cooling": max(0, int(GOV["block_until"] - time.time())),
+        }
 
 PAGE_CSS = """
 <style>
@@ -76,11 +168,11 @@ class DoubanCookieKeeper(_PluginBase):
     # 插件名称
     plugin_name = "豆瓣Cookie保活"
     # 插件描述
-    plugin_desc = "自动从 CookieCloud 拉取豆瓣 Cookie，检测作废/失效，低频保活并同步给豆瓣相关插件，失效即时通知"
+    plugin_desc = "豆瓣 Cookie 保活：进程层限速+403熔断避免把 CK 打死，dbcl2 到期倒计时预警，失效自动取用新 Cookie 并同步给豆瓣插件"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png"
     # 插件版本
-    plugin_version = "1.0.2"
+    plugin_version = "1.2.0"
     # 插件作者
     plugin_author = "yuwancumian2009"
     # 作者主页
@@ -103,6 +195,12 @@ class DoubanCookieKeeper(_PluginBase):
     _targets: str = DEFAULT_TARGETS
     _alert_interval: int = 6
     _onlyonce: bool = False
+    # 到期预警（dbcl2 的 expires 属性）
+    _expire_warn: int = 7
+    # 请求治理器
+    _gov_interval: float = 4.0
+    _gov_cooldown: int = 45
+    _gov_ua: str = ""
 
     # 运行态
     _running: bool = False
@@ -135,6 +233,21 @@ class DoubanCookieKeeper(_PluginBase):
             self._alert_interval = max(1, int(cfg.get("alert_interval") or 6))
         except (TypeError, ValueError):
             self._alert_interval = 6
+        try:
+            self._expire_warn = max(1, int(cfg.get("expire_warn") or 7))
+        except (TypeError, ValueError):
+            self._expire_warn = 7
+        try:
+            self._gov_interval = max(0.0, float(cfg.get("gov_interval") or 4))
+        except (TypeError, ValueError):
+            self._gov_interval = 4.0
+        try:
+            self._gov_cooldown = max(5, int(cfg.get("gov_cooldown") or 45))
+        except (TypeError, ValueError):
+            self._gov_cooldown = 45
+        self._gov_ua = str(cfg.get("gov_ua") or "").strip()
+        if self._enabled:
+            install_governor(self._gov_interval, self._gov_cooldown, self._gov_ua)
 
         if self._cron:
             try:
@@ -223,6 +336,28 @@ class DoubanCookieKeeper(_PluginBase):
                          "props": {"model": "alert_interval", "label": "失效重复提醒间隔（小时）",
                                    "type": "number", "min": 1}}], md=4),
             ]),
+            row([col(12, [{"component": "VCardTitle", "props": title_props,
+                            "text": "请求治理（防止 CK 被 MP 自己打死）"}])]),
+            row([
+                col(12, [{"component": "VTextField",
+                         "props": {"model": "gov_interval", "label": "豆瓣请求最小间隔（秒）",
+                                   "type": "number", "min": 1, "max": 30,
+                                   "hint": "所有插件发往 douban 的请求会被串行排队，按此间隔放行，默认 4 秒",
+                                   "persistent-hint": True}}], md=3),
+                col(12, [{"component": "VTextField",
+                         "props": {"model": "gov_cooldown", "label": "403/429 熔断时长（分钟）",
+                                   "type": "number", "min": 5, "max": 720,
+                                   "hint": "豆瓣一旦返回 403/429 立即静默这段时间，避免把登录态彻底打死",
+                                   "persistent-hint": True}}], md=3),
+                col(12, [{"component": "VTextField",
+                         "props": {"model": "gov_ua", "label": "统一 User-Agent（可选）",
+                                   "placeholder": "留空则不修改请求头",
+                                   "hint": "建议填你登录豆瓣那个浏览器的 UA；与浏览器不一致时豆瓣更易判定异常",
+                                   "persistent-hint": True}}], md=3),
+                col(12, [{"component": "VTextField",
+                         "props": {"model": "expire_warn", "label": "到期前预警（天）",
+                                   "type": "number", "min": 1, "max": 60}}], md=3),
+            ]),
             row([col(12, [{"component": "VCardTitle", "props": title_props, "text": "手动 Cookie（可选）"}])]),
             row([
                 col(12, [{"component": "VTextarea",
@@ -249,6 +384,10 @@ class DoubanCookieKeeper(_PluginBase):
             "cron": self._cron,
             "sync_targets": self._targets,
             "alert_interval": self._alert_interval,
+            "expire_warn": self._expire_warn,
+            "gov_interval": self._gov_interval,
+            "gov_cooldown": self._gov_cooldown,
+            "gov_ua": self._gov_ua,
             "onlyonce": False,
         }
         return rows, defaults
@@ -311,6 +450,15 @@ class DoubanCookieKeeper(_PluginBase):
         nickname = state.get("nickname") or ""
         fp = state.get("cookie_fp") or ""
         cc_msg = state.get("cc_msg") or self._last_cc_msg or "—"
+        gov = governor_snapshot()
+        days_left = state.get("days_left")
+        exp_text = state.get("expire_at") or "会话型（无固定到期）"
+        if isinstance(days_left, int):
+            exp_text += f"（剩 {days_left} 天）"
+        gov_text = (f"{'已启用' if gov.get('installed') else '未启用'}｜间隔 {gov.get('interval')}s｜"
+                    f"今日 {gov.get('today')} 次｜熔断 {gov.get('tripped')} 次")
+        if gov.get("cooling"):
+            gov_text += f"｜冷却剩 {gov['cooling']} 秒"
         cards = [
             ("豆瓣账号", (nickname + ("（" + uid + "）" if uid else "")) if nickname else (uid or "—")),
             ("Cookie 来源", self._source_label(state.get("source"))),
@@ -319,6 +467,8 @@ class DoubanCookieKeeper(_PluginBase):
             ("最近检测", checked_at),
             ("CookieCloud", cc_msg),
             ("目标插件", f"{len([1 for v in targets.values() if v.get('synced')])}/{len(targets) or 0} 已同步"),
+            ("dbcl2 到期", exp_text),
+            ("请求治理", gov_text),
             ("豆瓣信号", state.get("signal") or "—"),
         ]
         card_html = "".join(
@@ -418,6 +568,9 @@ class DoubanCookieKeeper(_PluginBase):
             "uid": state.get("uid"),
             "cookie_fp": state.get("cookie_fp"),
             "reason": state.get("reason"),
+            "expire_at": state.get("expire_at") or "",
+            "days_left": state.get("days_left"),
+            "governor": governor_snapshot(),
             "targets": state.get("targets") or {},
             "version": self.plugin_version,
             "cron": self._cron,
@@ -521,9 +674,11 @@ class DoubanCookieKeeper(_PluginBase):
                 "reason": best.get("reason") or "登录态有效",
                 "signal": best.get("signal") or "",
                 "details": best.get("details") or {},
+                "expire_at": best.get("expire_at") or merged.get("expire_at") or "",
                 "cc_msg": self._last_cc_msg or merged.get("cc_msg") or "",
                 "targets": targets,
             })
+            merged["days_left"] = self._days_left(merged.get("expire_at") or "")
             merged["history"] = self._push_history(state, {
                 "at": now, "valid": True, "source": best.get("source"),
                 "reason": ("Cookie 已更新" if changed else "Cookie 未变化"),
@@ -539,6 +694,18 @@ class DoubanCookieKeeper(_PluginBase):
                           f"{('｜UID：' + best.get('uid')) if best.get('uid') else ''}\n"
                           f"已同步目标插件：{', '.join([k for k, v in targets.items() if v.get('synced')]) or '无'}\n"
                           f"Cookie 指纹：{self._fp(cookie)}"),
+                )
+            exp = merged.get("expire_at") or ""
+            days_left = merged.get("days_left")
+            if self._notify and exp and isinstance(days_left, int) \
+                    and 0 <= days_left <= self._expire_warn and state.get("expire_alerted") != exp:
+                merged["expire_alerted"] = exp
+                self.save_data("state", merged)
+                self._notify_user(
+                    title="豆瓣 Cookie 即将到期",
+                    text=(f"dbcl2 将在 {exp} 到期（剩 {days_left} 天）。\n"
+                          "建议提前在电脑浏览器重新登录 douban.com，CookieCloud 会自动上传新 CK；"
+                          "本插件下一轮自动取用，并同步给豆瓣相关插件。"),
                 )
             logger.info(f"豆瓣Cookie保活：Cookie 有效（来源 {best.get('source')}，changed={changed}）")
             return
@@ -673,6 +840,34 @@ class DoubanCookieKeeper(_PluginBase):
                 "none": "无"}.get(str(source or ""), str(source or "—"))
 
     # ------------------------------------------------------------------ 探测
+    @staticmethod
+    def _dbcl2_expiry(sc_list: List[str]) -> str:
+        """从 Set-Cookie 里解析 dbcl2 的 expires，返回 'YYYY-mm-dd HH:MM'。"""
+        for sc in sc_list or []:
+            if not re.match(r"^\s*dbcl2=", str(sc)):
+                continue
+            m = re.search(r"[Ee]xpires=([^;]+)", str(sc))
+            if not m:
+                return ""
+            try:
+                dt = parsedate_to_datetime(m.group(1).strip())
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone().replace(tzinfo=None)
+                return dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                return ""
+        return ""
+
+    @staticmethod
+    def _days_left(expire_at: str) -> Optional[int]:
+        if not expire_at:
+            return None
+        try:
+            dt = datetime.strptime(expire_at, "%Y-%m-%d %H:%M")
+        except Exception:
+            return None
+        return int((dt - datetime.now()).total_seconds() // 86400)
+
     def _probe(self, cookie: str) -> Dict[str, Any]:
         pairs = self._parse_cookie(cookie)
         uid = ""
@@ -701,6 +896,7 @@ class DoubanCookieKeeper(_PluginBase):
         }
         details: Dict[str, Any] = {}
         deleted_keys: List[str] = []
+        expire_at = ""
 
         # 1) 首页：豆瓣在会话失效时会下发 dbcl2="deleted" / ck="deleted"
         try:
@@ -709,6 +905,7 @@ class DoubanCookieKeeper(_PluginBase):
             s.cookies.update(pairs)
             home = s.get("https://www.douban.com/", timeout=20, allow_redirects=False)
             sc_list = home.raw.headers.getlist("Set-Cookie")
+            expire_at = self._dbcl2_expiry(sc_list) or expire_at
             for sc in sc_list:
                 name = sc.split("=", 1)[0].strip()
                 if re.match(r'^\s*"?deleted', sc.split("=", 1)[1] if "=" in sc else ""):
@@ -716,7 +913,12 @@ class DoubanCookieKeeper(_PluginBase):
             pairs = self._merge_setcookies(pairs, sc_list)
             details["首页"] = f"HTTP {home.status_code}"
         except Exception as err:
-            result["reason"] = f"访问豆瓣首页失败：{type(err).__name__}"
+            msg = str(err)
+            if "冷却" in msg:
+                result["reason"] = f"请求治理器熔断中，本轮跳过：{msg}"
+                result["signal"] = "governor-cooldown"
+            else:
+                result["reason"] = f"访问豆瓣首页失败：{type(err).__name__}"
             result["details"] = details
             return result
 
@@ -734,7 +936,9 @@ class DoubanCookieKeeper(_PluginBase):
             mine = s2.get("https://www.douban.com/mine/", timeout=20, allow_redirects=False)
             mine_status = mine.status_code
             mine_loc = mine.headers.get("Location") or ""
-            pairs = self._merge_setcookies(pairs, mine.raw.headers.getlist("Set-Cookie"))
+            mine_sc = mine.raw.headers.getlist("Set-Cookie")
+            pairs = self._merge_setcookies(pairs, mine_sc)
+            expire_at = self._dbcl2_expiry(mine_sc) or expire_at
             details["我的"] = f"HTTP {mine_status}{(' → ' + mine_loc) if mine_loc else ''}"
         except Exception as err:
             details["我的"] = f"失败 {type(err).__name__}"
@@ -779,7 +983,9 @@ class DoubanCookieKeeper(_PluginBase):
                 s4.cookies.update(pairs)
                 sub = s4.get(f"https://movie.douban.com/subject/{KEEPALIVE_SUBJECT}/",
                              timeout=20, allow_redirects=False)
-                pairs = self._merge_setcookies(pairs, sub.raw.headers.getlist("Set-Cookie"))
+                sub_sc = sub.raw.headers.getlist("Set-Cookie")
+                pairs = self._merge_setcookies(pairs, sub_sc)
+                expire_at = self._dbcl2_expiry(sub_sc) or expire_at
                 details["保活条目"] = f"HTTP {sub.status_code}"
             except Exception as err:
                 details["保活条目"] = f"失败 {type(err).__name__}"
@@ -790,6 +996,7 @@ class DoubanCookieKeeper(_PluginBase):
             "nickname": nickname,
             "cookie": self._cookie_str(pairs),
             "signal": f"home=200, mine={mine_status}",
+            "expire_at": expire_at,
             "details": details,
         })
         return result

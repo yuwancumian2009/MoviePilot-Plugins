@@ -29,7 +29,7 @@ http://你的MP地址:3001/api/v1/plugin/install?repo_url=https://github.com/yuw
 | [豆瓣榜单Plus（自用）](#5-豆瓣榜单plus自用doubanrankplus2) | `DoubanRankPlus2` | v1.5.1 | 豆瓣热门榜单订阅，豆瓣/TMDB 双评分 + 分类阈值过滤 |
 | [Emby 缺失订阅（自用）](#6-emby-缺失订阅自用embymissingsubscribe2) | `EmbyMissingSubscribe2` | v1.1.13 | 扫描 Emby 库遗漏剧集与合集，自动补订阅 |
 | [站点分享率提醒](#7-站点分享率提醒siteratiomonitor) | `SiteRatioMonitor` | v1.0.0 | 各站分享率低于预警线时发通知 |
-| [豆瓣 Cookie 保活](#8-豆瓣cookie-保活doubancookiekeeper) | `DoubanCookieKeeper` | v1.0.2 | CookieCloud 自动取豆瓣 CK、判失效、分发到片单/豆列插件并报警 |
+| [豆瓣 Cookie 保活](#8-豆瓣cookie-保活doubancookiekeeper) | `DoubanCookieKeeper` | v1.2.0 | CookieCloud 自动取豆瓣 CK、判失效、分发到片单/豆列插件并报警 |
 
 ---
 
