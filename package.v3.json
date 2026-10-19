@@ -16,12 +16,13 @@
     "name": "幽灵整理记录",
     "description": "比对 NAS 本地媒体库文件（strm 或本地实体视频文件），体检「整理记录还在、媒体文件已丢失」的幽灵记录，支持一键清理；诊断报告后台生成并推送到通知渠道，快速定位是配置问题还是媒体真被删。",
     "labels": "系统",
-    "version": "2.0.1",
+    "version": "2.0.2",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png",
     "author": "yuwancumian2009",
     "level": 1,
     "release": true,
     "history": {
+      "v2.0.2": "补齐剩余兼容导入：告警枚举改用 MessageType；插件重载改用 app.sdk.plugin.manager.PluginManager。",
       "v2.0.1": "迁移 V3 告警枚举 MessageType、浏览器/CF 适配器到 app.adapters.network，消除兼容告警。",
       "v2.0.0": "MoviePilot V3 专用分支：导入迁移到 app.sdk 稳定出口；清理整理记录改用 V3 官方 TransferHistoryOper（自带写事务），不再直接操作 ORM 会话。"
     },
@@ -47,12 +48,13 @@
     "name": "豆瓣Cookie保活",
     "description": "豆瓣 Cookie 保活：进程层限速+403熔断避免把 CK 打死，dbcl2 到期倒计时预警",
     "labels": "工具",
-    "version": "2.0.1",
+    "version": "2.0.2",
     "icon": "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png",
     "author": "yuwancumian2009",
     "level": 1,
     "release": true,
     "history": {
+      "v2.0.2": "补齐剩余兼容导入：告警枚举改用 MessageType；插件重载改用 app.sdk.plugin.manager.PluginManager。",
       "v2.0.1": "迁移 V3 告警枚举 MessageType，消除兼容告警。",
       "v2.0.0": "MoviePilot V3 专用分支：导入迁移到 app.sdk 稳定出口，CookieCloud 改用 V3 实际模块路径。"
     },

@@ -172,7 +172,7 @@ class DoubanCookieKeeper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png"
     # 插件版本
-    plugin_version = "2.0.1"
+    plugin_version = "2.0.2"
     # 插件作者
     plugin_author = "yuwancumian2009"
     # 作者主页
@@ -1053,7 +1053,7 @@ class DoubanCookieKeeper(_PluginBase):
                 if self._auto_reload:
                     try:
                         from app.api.endpoints.plugin import register_plugin
-                        from app.core.plugin import PluginManager
+                        from app.sdk.plugin.manager import PluginManager
                         PluginManager().reload_plugin(pid)
                         register_plugin(pid)
                         item.update(reloaded=True, note="已写入配置并重载")

@@ -91,7 +91,7 @@ from app.db.models.transferhistory import TransferHistory
 from app.db.oper.transferhistory import TransferHistoryOper
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
-from app.schemas.types import EventType, NotificationType
+from app.schemas.types import EventType, MessageType
 
 # 缺失分级
 LEVEL_WHOLE = "whole"
@@ -622,7 +622,7 @@ class GhostTransferCleaner(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
     # 插件版本
-    plugin_version = "2.0.1"
+    plugin_version = "2.0.2"
     # 插件作者
     plugin_author = "yuwancumian2009"
     # 作者主页
