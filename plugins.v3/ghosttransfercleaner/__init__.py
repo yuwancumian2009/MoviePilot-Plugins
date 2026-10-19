@@ -91,7 +91,7 @@ from app.db.models.transferhistory import TransferHistory
 from app.db.oper.transferhistory import TransferHistoryOper
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
-from app.schemas.types import EventType, MessageType
+from app.schemas.types import EventType, NotificationType
 
 # 缺失分级
 LEVEL_WHOLE = "whole"
@@ -1256,7 +1256,7 @@ class GhostTransferCleaner(_PluginBase):
         内存队列，页面不开着就看不到、也不留任何记录 —— 用它等于「点了没反应」。
         """
         try:
-            self.post_message(mtype=MessageType.Plugin, title=title, text=str(text))
+            self.post_message(mtype=NotificationType.Plugin, title=title, text=str(text))
             return
         except Exception as err:
             logger.error(f"幽灵整理记录：通知链发送失败，退回页面内提示：{err}")

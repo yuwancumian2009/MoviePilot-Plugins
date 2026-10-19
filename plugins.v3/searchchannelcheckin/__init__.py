@@ -31,7 +31,7 @@ import pytz
 from app.sdk.config import settings
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
-from app.schemas.types import MessageType
+from app.schemas.types import NotificationType
 
 from .vendor.search.dian115.client import Dian115Client, Dian115Error
 from .vendor.search.hdhaven.client import HDHavenClient, HDHavenError
@@ -925,7 +925,7 @@ class SearchChannelCheckin(_PluginBase):
             lines.append(f"{mark} {item.get('channel_name')}：{tail}{change_text}")
         try:
             self.post_message(
-                mtype=MessageType.Plugin,
+                mtype=NotificationType.Plugin,
                 title="搜索渠道签到",
                 text="\n".join(lines),
             )

@@ -15,7 +15,7 @@ from apscheduler.triggers.cron import CronTrigger
 from app.adapters.external.cookiecloud import CookieCloudHelper
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
-from app.schemas.types import MessageType
+from app.schemas.types import NotificationType
 
 # 同一时间只允许一次检测（定时任务与页面按钮可能并发）
 _run_lock = threading.Lock()
@@ -1053,7 +1053,7 @@ class DoubanCookieKeeper(_PluginBase):
                 if self._auto_reload:
                     try:
                         from app.api.endpoints.plugin import register_plugin
-                        from app.sdk.plugin.manager import PluginManager
+                        from app.core.plugin import PluginManager
                         PluginManager().reload_plugin(pid)
                         register_plugin(pid)
                         item.update(reloaded=True, note="已写入配置并重载")
@@ -1081,7 +1081,7 @@ class DoubanCookieKeeper(_PluginBase):
 
     def _notify_user(self, title: str, text: str):
         try:
-            self.post_message(mtype=MessageType.Plugin, title=title, text=text)
+            self.post_message(mtype=NotificationType.Plugin, title=title, text=text)
         except Exception as err:
             logger.error(f"豆瓣Cookie保活：发送通知失败 {err}")
         # 记录提醒时间（invalid 时用于限频）
