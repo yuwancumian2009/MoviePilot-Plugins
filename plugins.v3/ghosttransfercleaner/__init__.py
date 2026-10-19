@@ -622,7 +622,7 @@ class GhostTransferCleaner(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
     # 插件版本
-    plugin_version = "2.0.2"
+    plugin_version = "2.0.0"
     # 插件作者
     plugin_author = "yuwancumian2009"
     # 作者主页
