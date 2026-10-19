@@ -29,6 +29,7 @@ http://你的MP地址:3001/api/v1/plugin/install?repo_url=https://github.com/yuw
 | [豆瓣榜单Plus（自用）](#5-豆瓣榜单plus自用doubanrankplus2) | `DoubanRankPlus2` | v1.5.1 | 豆瓣热门榜单订阅，豆瓣/TMDB 双评分 + 分类阈值过滤 |
 | [Emby 缺失订阅（自用）](#6-emby-缺失订阅自用embymissingsubscribe2) | `EmbyMissingSubscribe2` | v1.1.13 | 扫描 Emby 库遗漏剧集与合集，自动补订阅 |
 | [站点分享率提醒](#7-站点分享率提醒siteratiomonitor) | `SiteRatioMonitor` | v1.0.0 | 各站分享率低于预警线时发通知 |
+| [豆瓣 Cookie 保活](#8-豆瓣cookie-保活doubancookiekeeper) | `DoubanCookieKeeper` | v1.0.2 | CookieCloud 自动取豆瓣 CK、判失效、分发到片单/豆列插件并报警 |
 
 ---
 
@@ -167,3 +168,20 @@ Issues / PR 都欢迎：https://github.com/yuwancumian2009/MoviePilot-Plugins/is
 ## 📄 许可证
 
 MIT，详见 [LICENSE](LICENSE)。
+
+---
+
+## 8. 豆瓣 Cookie 保活（DoubanCookieKeeper）
+
+**版本：v1.0.2 ｜ 标签：工具 ｜ 作者：yuwancumian**
+
+豆瓣的登录态由服务端风控掌管：浏览器长期不用、换 IP、多设备登录都会让 `dbcl2` 直接变成 `deleted`，此时任何"保活请求"都救不回来，只能重新登录一次。这个插件把「重新登录之后的活」全部自动化：
+
+- **自动采集**：从 CookieCloud 读取 `douban.com` 的 Cookie（也可在配置里手动粘贴），按 `手动 → CookieCloud → 本地缓存` 优先级取第一份有效的。
+- **准确判失效**：请求豆瓣首页与「我的豆瓣」，识别 `dbcl2=deleted`、被重定向到验证页、403 等信号，不再靠"能不能打开页面"猜。
+- **自动分发**：Cookie 变了就写入 `DoubanFolio`、`DoubanDoulist` 等插件配置并热重载，不用逐个插件手改。
+- **失效报警**：状态翻转或超过 `alert_interval` 小时仍失效时发通知（恢复也会通知），不会每轮重复轰炸。
+- **低频保活**：按 cron 定时访问首页/条目页并回收豆瓣新下发的 `bid`/`ck`，默认 6 小时一次。
+- **可视化状态页**：来源、UID、Cookie 指纹、目标插件同步结果、最近 30 次检测记录一屏看完，支持手动「立即检测并同步」。
+
+配置项：`use_cookiecloud`（默认开）、`cookie`（可选手动）、`sync_targets`（默认 `DoubanFolio,DoubanDoulist`）、`cron`（默认 `0 */6 * * *`）、`auto_reload`、`notify`、`alert_interval`。
