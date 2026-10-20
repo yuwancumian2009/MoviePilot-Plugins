@@ -366,6 +366,16 @@ check("空闲时回显上次结果", "库内 107 部" in prog.api_scan_progress(
 check("未选媒体库时不启动", _plugin(enabled=True, library_enabled=True).api_scan()["started"], False)
 check("未开启补齐时不启动", _plugin(enabled=True, library_enabled=False, library_names=["动画电影"]).api_scan()["started"], False)
 
+# 收尾阶段必须解除「运行中」状态（v1.5.0 实测 bug：done 阶段又续了一次心跳）
+done_plugin = _plugin(enabled=True, library_enabled=True, library_names=["动画电影"])
+done_plugin._data["scan_lock"] = {"heartbeat": datetime.now().isoformat(timespec="seconds")}
+done_plugin._data["library_progress"] = {"stage": "searching", "current": "X"}
+check("搜索中=运行中", done_plugin._scan_is_running(), True)
+done_plugin._update_scan_progress(
+    stage="done", current="", index=0, total=0, downloaded=0, missed=1, failed=0
+)
+check("done 阶段=空闲", done_plugin._scan_is_running(), False)
+
 # ---------------------------------------------------------------- 结果
 passed = sum(1 for _, ok in results if ok)
 print(f"\n共 {len(results)} 项，通过 {passed} 项，失败 {len(results) - passed} 项")
