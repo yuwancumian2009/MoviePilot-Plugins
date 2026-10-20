@@ -26,7 +26,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -92,6 +92,8 @@ class DualVersionDownloader(_PluginBase):
 
         history = self.get_data("history")
         self._history = history if isinstance(history, dict) else {}
+        hashes = self.get_data("hashes")
+        self._hashes = hashes if isinstance(hashes, dict) else {}
         self._prune_history()
 
         logger.info(
@@ -417,16 +419,21 @@ class DualVersionDownloader(_PluginBase):
             media_key = self._media_key(mediainfo)
             if not media_key:
                 return
+            download_hash = str(data.get("hash") or "").lower()
             if self._in_cooldown(media_key):
                 logger.debug(f"双版本补全：{media_key} 在冷却期内，跳过")
                 return
 
             with self._lock:
-                if media_key in self._history:
-                    logger.debug(f"双版本补全：{media_key} 已处理过，跳过")
+                # 同一个种子只处理一次，避免事件重复投递；不同种子仍按冷却期判定
+                if download_hash and download_hash in self._hashes:
+                    logger.debug(f"双版本补全：种子 {download_hash[:12]} 已处理过，跳过")
                     return
-                # 先占位，避免事件重复投递导致重复补下
-                self._history[media_key] = datetime.now().isoformat(timespec="seconds")
+                now = datetime.now().isoformat(timespec="seconds")
+                if download_hash:
+                    self._hashes[download_hash] = now
+                self._history[media_key] = now
+                self._save_state()
 
             threading.Thread(
                 target=self._complete,
@@ -474,7 +481,7 @@ class DualVersionDownloader(_PluginBase):
                 save_path=save_path,
                 downloader=downloader,
                 username=username,
-                source="Subscribe|双版本补全",
+                source="Plugin|双版本补全",
             )
             if result:
                 logger.info(
@@ -491,8 +498,7 @@ class DualVersionDownloader(_PluginBase):
         finally:
             with self._lock:
                 self._history[media_key] = datetime.now().isoformat(timespec="seconds")
-                self._prune_history()
-                self.save_data("history", self._history)
+                self._save_state()
 
     def _search_candidates(self, mediainfo: Any) -> List[Any]:
         """按媒体身份搜索，过滤出目标分辨率的候选并排序。"""
@@ -580,22 +586,32 @@ class DualVersionDownloader(_PluginBase):
         return datetime.now() - last_dt < timedelta(days=self._cooldown_days)
 
     def _prune_history(self) -> None:
-        """保留最近 500 条、90 天内的记录。"""
-        if not isinstance(self._history, dict):
-            self._history = {}
-            return
+        """冷却表与种子去重表都只保留最近 90 天、各自最多 500 条。"""
         limit = datetime.now() - timedelta(days=90)
-        cleaned: Dict[str, str] = {}
-        for key, value in self._history.items():
-            try:
-                if datetime.fromisoformat(str(value)) >= limit:
-                    cleaned[key] = value
-            except ValueError:
-                continue
-        if len(cleaned) > 500:
-            newest = sorted(cleaned.items(), key=lambda kv: kv[1], reverse=True)[:500]
-            cleaned = dict(newest)
-        self._history = cleaned
+
+        def _clean(raw: Any) -> Dict[str, str]:
+            if not isinstance(raw, dict):
+                return {}
+            cleaned: Dict[str, str] = {}
+            for key, value in raw.items():
+                try:
+                    if datetime.fromisoformat(str(value)) >= limit:
+                        cleaned[str(key)] = str(value)
+                except ValueError:
+                    continue
+            if len(cleaned) > 500:
+                newest = sorted(cleaned.items(), key=lambda kv: kv[1], reverse=True)[:500]
+                cleaned = dict(newest)
+            return cleaned
+
+        self._history = _clean(self._history)
+        self._hashes = _clean(getattr(self, "_hashes", {}))
+
+    def _save_state(self) -> None:
+        """把冷却表与种子去重表落盘（调用方需自行持有锁）。"""
+        self._prune_history()
+        self.save_data("history", self._history)
+        self.save_data("hashes", self._hashes)
 
     def _notify(self, text: str, ok: bool = True) -> None:
         if not self._notify_enabled:
