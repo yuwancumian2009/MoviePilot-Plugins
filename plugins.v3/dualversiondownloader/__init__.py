@@ -71,7 +71,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.2.0"
+    version = "1.2.1"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -631,12 +631,14 @@ class DualVersionDownloader(_PluginBase):
             data = event.event_data or {}
             context = data.get("context")
             if not context:
+                logger.debug("双版本补全：事件缺少 context，跳过")
                 return
 
             mediainfo = getattr(context, "media_info", None)
             meta = getattr(context, "meta_info", None)
             torrent = getattr(context, "torrent_info", None)
             if not mediainfo or not meta:
+                logger.debug(f"双版本补全：事件缺少 mediainfo/meta_info（mediainfo={bool(mediainfo)}，meta={bool(meta)}），跳过")
                 return
 
             media_type = self._media_type_of(mediainfo)
@@ -651,6 +653,7 @@ class DualVersionDownloader(_PluginBase):
                     return
                 selected = self._tv_genres
             else:
+                logger.debug(f"双版本补全：不支持的媒体类型 {media_type}，跳过")
                 return
 
             source = str(data.get("source") or "")
@@ -660,6 +663,7 @@ class DualVersionDownloader(_PluginBase):
 
             text = self._pix_text(torrent, meta)
             if not self._RE_4K.search(text):
+                logger.debug(f"双版本补全：非 4K，跳过：{text[:80]}")
                 return
             if self._RE_1080.search(text):
                 # 标题里同时出现 1080 与 4K（如合集/多版本包）时不动，避免误判
@@ -675,6 +679,7 @@ class DualVersionDownloader(_PluginBase):
             targets = self._target_episodes(context)
             media_key = self._media_key(mediainfo, targets)
             if not media_key:
+                logger.debug(f"双版本补全：无法生成媒体键（{getattr(mediainfo, 'title', '')}），跳过")
                 return
             download_hash = str(data.get("hash") or "").lower()
             if self._in_cooldown(media_key):
