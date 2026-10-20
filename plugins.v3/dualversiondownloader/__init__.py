@@ -35,7 +35,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.6.4"
+    plugin_version = "1.6.5"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -1087,7 +1087,7 @@ class DualVersionDownloader(_PluginBase):
             + js_btn("查看扫描进度（刷新状态）", "/plugin/DualVersionDownloader/scan_progress", "#0288d1", "#fff")
             + js_btn("清空冷却记录", "/plugin/DualVersionDownloader/reset_history", "#546e7a", "#fff")
             + "</div>"
-            + '<div id="dv-live" style="margin-top:6px;font-size:13px;color:#90a4ae">点上面的按钮，结果会显示在这里（扫描中会显示第几部/共几部）。</div>'
+            + '<div id="dv-live" style="margin-top:8px;font-size:14px;line-height:1.5;color:#eceff1">点上面的按钮，结果会显示在这里（扫描中会显示第几部/共几部）。</div>'
         )
 
         return [
