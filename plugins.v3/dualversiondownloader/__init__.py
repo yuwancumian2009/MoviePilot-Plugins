@@ -35,7 +35,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.4.0"
+    plugin_version = "1.4.1"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -206,11 +206,18 @@ class DualVersionDownloader(_PluginBase):
         """媒体库补齐的定时扫描（默认每天执行，可从配置改 cron）。"""
         if not (self._library_enabled and self._library_names and self._library_cron):
             return []
+        try:
+            from apscheduler.triggers.cron import CronTrigger
+
+            trigger = CronTrigger.from_crontab(self._library_cron.strip())
+        except Exception as err:  # noqa: BLE001
+            logger.error(f"双版本补全：cron 表达式无效（{self._library_cron}）：{err}")
+            return []
         return [
             {
                 "id": "DualVersionLibraryScan",
                 "name": "媒体库4K补齐",
-                "trigger": self._library_cron,
+                "trigger": trigger,
                 "func": self._scheduled_library_scan,
                 "kwargs": {},
             }
@@ -678,7 +685,6 @@ class DualVersionDownloader(_PluginBase):
         if self._categories:
             passed, category_name = self._category_pass(mediainfo)
             if not passed:
-                self._library_mark(key)
                 return "skip", f"{head}：类别 {category_name} 不在生效范围"
 
         try:
@@ -1387,16 +1393,18 @@ class DualVersionDownloader(_PluginBase):
         if not self._categories:
             return True, ""
         cid, name = self._resolve_category(mediainfo)
-        if cid and cid in self._categories:
+        selected_ids = {str(value) for value in self._categories}
+        selected_names = {
+            self._category_names.get(str(value), str(value)) for value in self._categories
+        }
+        if cid and str(cid) in selected_ids:
             return True, name
-        if not cid and name:
-            # 兼容用户手填类别名（如"动画电影"）的情况
-            selected_names = {
-                self._category_names.get(value, value) for value in self._categories
-            }
-            for token in re.split(r"\s*/\s*", name):
-                if token and token in selected_names:
-                    return True, name
+        # 类别 ID 对不上（策略调整过/同名多类）时按名称兜底
+        for token in re.split(r"\s*/\s*", name or ""):
+            if token and token in selected_names:
+                return True, name
+        if cid:
+            logger.debug(f"双版本补全：类别未命中，媒体类别 id={cid} 名称={name or '-'}")
         return False, name or "未判定"
 
     # ------------------------------------------------------------------

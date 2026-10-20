@@ -327,6 +327,22 @@ check("默认站点为多选列表", form_defaults.get("sites"), [])
 check("默认筛选字段齐全",
       all(k in form_defaults for k in ("quality", "video_codec", "require_words", "any_words", "min_size_gb")), True)
 
+
+# 类别 ID 与名称不一致时按名称兜底（v1.4.0 修复）
+name_plugin = _plugin(enabled=True, categories=["3"])
+name_plugin._category_names = {"3": "外语电影"}
+name_plugin._categories = ["3"]
+name_plugin._resolve_category = lambda _m: ("99", "外语电影")
+check("类别ID不符但名称命中", name_plugin._category_pass(object()), (True, "外语电影"))
+name_plugin._resolve_category = lambda _m: ("99", "华语电影")
+check("类别ID与名称都不符", name_plugin._category_pass(object())[0], False)
+
+svc_plugin = _plugin(enabled=True, library_enabled=True, library_names=["外语电影"], library_cron="0 4 * * *")
+_services = svc_plugin.get_service()
+check("cron 服务已注册", len(_services), 1)
+check("cron 触发器为 CronTrigger", type(_services[0]["trigger"]).__name__, "CronTrigger")
+check("非法 cron 不注册", _plugin(enabled=True, library_enabled=True, library_names=["x"], library_cron="bad cron").get_service(), [])
+
 # ---------------------------------------------------------------- 结果
 passed = sum(1 for _, ok in results if ok)
 print(f"\n共 {len(results)} 项，通过 {passed} 项，失败 {len(results) - passed} 项")
