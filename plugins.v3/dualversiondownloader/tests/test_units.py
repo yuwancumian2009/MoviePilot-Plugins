@@ -103,7 +103,7 @@ _stub("app.schemas")
 _stub("app.schemas.category", ClassificationPolicy=None)
 _stub(
     "app.schemas.types",
-    EventType=types.SimpleNamespace(DownloadAdded="download.added"),
+    EventType=types.SimpleNamespace(DownloadAdded="download.added", TransferComplete="transfer.complete"),
     MediaType=types.SimpleNamespace(
         MOVIE=types.SimpleNamespace(value="电影"),
         TV=types.SimpleNamespace(value="电视剧"),

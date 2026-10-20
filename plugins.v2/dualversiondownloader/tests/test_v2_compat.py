@@ -108,7 +108,7 @@ _stub("app.db.site_oper", SiteOper=object)
 _stub("app.schemas")
 _stub(
     "app.schemas.types",
-    EventType=types.SimpleNamespace(DownloadAdded="download.added"),
+    EventType=types.SimpleNamespace(DownloadAdded="download.added", TransferComplete="transfer.complete"),
     MediaType=types.SimpleNamespace(MOVIE=types.SimpleNamespace(value="电影")),
     NotificationType=types.SimpleNamespace(Plugin="插件", Download="资源下载"),
     SystemConfigKey=types.SimpleNamespace(Directories="Directories", MediaServers="MediaServers"),

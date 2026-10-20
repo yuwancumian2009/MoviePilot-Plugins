@@ -78,7 +78,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.7.1"
+    plugin_version = "1.7.2"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -147,6 +147,9 @@ class DualVersionDownloader(_PluginBase):
         self._library_history: Dict[str, str] = {}
         self._scan_running: bool = False
         self._scan_limit_override: Optional[int] = None
+        self._scan_ignore_cooldown: bool = False
+        self._refresh_media: bool = True
+        self._library_hashes: Dict[str, str] = {}
         self._last_filter_stats: Dict[str, Any] = {}
         self._relaxed_used: bool = False
         self._strict_reason: str = ""
@@ -199,6 +202,7 @@ class DualVersionDownloader(_PluginBase):
             self._library_cooldown_days = int(self._config.get("library_cooldown_days", 30) or 0)
         except (TypeError, ValueError):
             self._library_cooldown_days = 0
+        self._refresh_media = bool(self._config.get("refresh_media", True))
 
         try:
             self._max_size_gb = float(self._config.get("max_size_gb") or 0)
@@ -223,6 +227,8 @@ class DualVersionDownloader(_PluginBase):
         self._hashes = hashes if isinstance(hashes, dict) else {}
         lib_history = self.get_data("library_history")
         self._library_history = lib_history if isinstance(lib_history, dict) else {}
+        lib_hashes = self.get_data("library_hashes")
+        self._library_hashes = lib_hashes if isinstance(lib_hashes, dict) else {}
         self._prune_history()
 
         self._policy_cache = None
@@ -239,7 +245,8 @@ class DualVersionDownloader(_PluginBase):
             f"必含={self._require_words or '-'}，任选={self._any_words or '-'})，"
             f"站点={len(self._sites_selected) or '全部'}，"
             f"库补齐={self._library_enabled}"
-            f"({self._library_label() or '未选库'}，每次{self._library_limit}部)"
+            f"({self._library_label() or '未选库'}，每次{self._library_limit}部，"
+            f"补下后刷新库={self._refresh_media})"
         )
 
     def get_state(self) -> bool:
@@ -679,6 +686,8 @@ class DualVersionDownloader(_PluginBase):
                 return False
             self._scan_running = True
             self._scan_limit_override = limit
+            # 手动「全部待补」视为补历史欠账：不受冷却期限制
+            self._scan_ignore_cooldown = limit is not None and int(limit) <= 0
             self._touch_scan_lock()
         if self._notify_enabled:
             try:
@@ -773,6 +782,80 @@ class DualVersionDownloader(_PluginBase):
             cleaned = dict(newest)
         self._library_history = cleaned
 
+    def _remember_library_hash(self, download_hash: str, tmdb_id: str) -> None:
+        """记住本插件补下过的任务，转移完成时用它触发媒体库刷新。"""
+        digest = str(download_hash or "").strip().lower()
+        if not digest:
+            return
+        with self._lock:
+            self._library_hashes[digest] = str(tmdb_id or "")
+            if len(self._library_hashes) > 500:
+                for stale in list(self._library_hashes)[: len(self._library_hashes) - 500]:
+                    self._library_hashes.pop(stale, None)
+            self.save_data("library_hashes", self._library_hashes)
+
+    def _is_library_hash(self, download_hash: str) -> bool:
+        digest = str(download_hash or "").strip().lower()
+        return bool(digest) and digest in (self._library_hashes or {})
+
+    def _schedule_library_refresh(self, delay: int = 120, reason: str = "") -> None:
+        """延时刷新媒体库。
+
+        strm 库的链路是「下载完成 → MoviePilot 转移到网盘 → strm 工具生成 .strm → Emby 索引」，
+        最后一步不会自己发生，必须调一次媒体库刷新，新版本才会出现在库中。
+        """
+
+        def _worker() -> None:
+            time.sleep(max(10, int(delay)))
+            self._refresh_emby_libraries(reason=reason)
+
+        threading.Thread(target=_worker, name="DualVersionRefresh", daemon=True).start()
+
+    def _media_post(self, path: str, **params: Any) -> bool:
+        host, api_key, prefix = self._media_server_conf()
+        if not host:
+            return False
+        url = f"{host}/{prefix}/{path}" if prefix else f"{host}/{path}"
+        params["api_key"] = api_key
+        try:
+            response = self._http().post_res(url=url, params=params, timeout=60)
+        except Exception as err:  # noqa: BLE001
+            logger.warn(f"双版本补全：POST 媒体服务器失败（{path}）：{err}")
+            return False
+        status = int(getattr(response, "status_code", 0) or 0)
+        if status >= 300:
+            logger.warn(f"双版本补全：刷新媒体库返回 HTTP {status}（{path}）")
+            return False
+        return True
+
+    def _refresh_emby_libraries(self, reason: str = "") -> int:
+        """刷新配置的媒体库，让新补下的 1080p 立刻被 Emby 索引。"""
+        if not self._library_names:
+            return 0
+        libraries = {
+            str(item.get("Name") or ""): str(item.get("ItemId") or item.get("Id") or "")
+            for item in self._emby_libraries()
+            if item.get("Name")
+        }
+        done = 0
+        for name in self._library_names:
+            item_id = libraries.get(name)
+            if not item_id:
+                logger.warn(f"双版本补全：刷新媒体库时找不到「{name}」")
+                continue
+            ok = self._media_post(
+                f"Items/{item_id}/Refresh",
+                Recursive="true",
+                ImageRefreshMode="Default",
+                MetadataRefreshMode="Default",
+                ReplaceAllImages="false",
+            )
+            if ok:
+                done += 1
+        if done:
+            logger.info(f"双版本补全：已触发刷新 {done} 个媒体库（{reason or '补下完成'}）")
+        return done
+
     def _resolve_library_save_path(self) -> Optional[str]:
         """1080p 的下载目录：优先配置，其次按目录设置里「电影」目录自动推断。"""
         if self._library_save_path:
@@ -818,12 +901,21 @@ class DualVersionDownloader(_PluginBase):
             logger.info(f"双版本补全：开始扫描媒体库 {self._library_label()}（{self._scan_limit_desc()}）")
             groups = self._collect_library_movies()
             summary["scanned"] = len(groups)
-            pending = [
-                group
-                for group in groups.values()
-                if group.get("has4k") and not group.get("has1080")
-                and not self._library_in_cooldown(group.get("key") or "")
-            ]
+            ignore_cooldown = bool(self._scan_ignore_cooldown)
+            skipped_cooldown = 0
+            pending = []
+            for group in groups.values():
+                if not group.get("has4k") or group.get("has1080"):
+                    continue
+                if not ignore_cooldown and self._library_in_cooldown(group.get("key") or ""):
+                    skipped_cooldown += 1
+                    continue
+                pending.append(group)
+            if skipped_cooldown:
+                logger.info(
+                    f"双版本补全：另有 {skipped_cooldown} 部仍在冷却期（{self._library_cooldown_days} 天）内，"
+                    "点「手动补全一轮（全部待补）」可强制重试"
+                )
             summary["pending"] = len(pending)
             pending.sort(key=lambda g: (-int(g.get("year") or 0), str(g.get("title") or "")))
             plan = pending if limit <= 0 else pending[:limit]
@@ -898,6 +990,8 @@ class DualVersionDownloader(_PluginBase):
                 self.save_data("library_last", summary)
             except Exception:  # noqa: BLE001
                 pass
+            if self._refresh_media and summary["downloaded"]:
+                self._schedule_library_refresh(delay=180, reason="扫描结束")
             logger.info(
                 f"双版本补全：媒体库扫描结束，扫描 {summary['scanned']} 部，待补 {summary['pending']} 部，"
                 f"补下成功 {summary['downloaded']}，未命中 {summary['missed']}，"
@@ -981,6 +1075,7 @@ class DualVersionDownloader(_PluginBase):
         if not download_hash:
             return "fail", f"{head}：下载器未接受任务（{best_title}）"
         self._library_mark(key)
+        self._remember_library_hash(download_hash, tmdb_id)
         relaxed_note = f"，严格规则未命中（{self._strict_reason}）已放宽" if self._relaxed_used else ""
         logger.info(
             f"双版本补全[库补齐]：{head} 已补下 {best_title}"
@@ -1502,12 +1597,27 @@ class DualVersionDownloader(_PluginBase):
                             self._col_text("library_downloader", "指定下载器(留空=默认)", "", md=4),
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 8, "class": "d-flex align-center"},
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSwitch",
+                                        "props": {
+                                            "model": "refresh_media",
+                                            "label": "补下后刷新媒体库",
+                                            "hint": "strm 库要刷新 Emby 才会出现新补的 1080p",
+                                            "persistentHint": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4, "class": "d-flex align-center"},
                                 "content": [
                                     {
                                         "component": "div",
                                         "props": {"class": "text-caption"},
-                                        "text": "操作按钮在插件右上角菜单「查看数据」页。",
+                                        "text": "操作按钮在「查看数据」页",
                                     }
                                 ],
                             },
@@ -1541,6 +1651,7 @@ class DualVersionDownloader(_PluginBase):
             "library_downloader": "",
             "library_limit": 3,
             "library_cooldown_days": 30,
+            "refresh_media": True,
         }
 
     # ------------------------------------------------------------------
@@ -1769,6 +1880,23 @@ class DualVersionDownloader(_PluginBase):
     # ------------------------------------------------------------------
     # 事件处理
     # ------------------------------------------------------------------
+
+    @eventmanager.register(EventType.TransferComplete)
+    def on_transfer_complete(self, event: Event) -> None:
+        """本插件补下的 1080p 转移完成 → 等 strm 生成后刷新媒体库。"""
+        if not (self._enabled and self._refresh_media):
+            return
+        try:
+            data = event.event_data or {}
+            if data.get("success") is False:
+                return
+            download_hash = str(data.get("download_hash") or "").strip()
+            if not self._is_library_hash(download_hash):
+                return
+            logger.info(f"双版本补全：补下的 1080p 已转移完成（hash={download_hash}），稍后刷新媒体库")
+            self._schedule_library_refresh(delay=120, reason="转移完成")
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"双版本补全：处理转移完成事件失败：{err}")
 
     @eventmanager.register(EventType.DownloadAdded)
     def on_download_added(self, event: Event) -> None:
