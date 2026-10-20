@@ -6,7 +6,7 @@
 import importlib.util
 import sys
 import types
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -474,6 +474,19 @@ check("配置页不留长篇提示（>200字的 VAlert 已清空）", _long == [
 check("配置页保留状态提示（一条短 VAlert）", 1 <= len(_alerts) <= 2, True)
 _hints = [n for n in _walk(form_schema) if "hint" in (n.get("props") or {})]
 check("必要填写指引（hint）仍保留", len(_hints) >= 3, True)
+
+# ------------------------------------------------- 在途/未命中 两本账
+_p2 = _plugin(enabled=True, library_enabled=True, library_names=["动画电影"], library_cooldown_days=7)
+_now = datetime.now().isoformat(timespec="seconds")
+_p2._library_history = {"tmdb:1": _now}
+check("刚补下的算在途（手动全量不重复补）", _p2._library_in_flight("tmdb:1"), True)
+_p2._library_missed = {"tmdb:2": _now}
+check("未命中的不算在途（手动全量可立刻重试）", _p2._library_in_flight("tmdb:2"), False)
+check("未命中的仍进冷却（定时扫描不反复撞站）", _p2._library_in_cooldown("tmdb:2"), True)
+_old = (datetime.now() - timedelta(hours=13)).isoformat(timespec="seconds")
+_p2._library_history = {"tmdb:3": _old}
+check("补下超过 12 小时仍未入库 → 不算在途，会重试", _p2._library_in_flight("tmdb:3"), False)
+check("扫描结果里带 in_flight 字段（页面能显示）", "in_flight" in (ROOT / "__init__.py").read_text(encoding="utf-8"), True)
 
 # ------------------------------------------------- 排除词必须按词边界匹配
 _cls = type(man)

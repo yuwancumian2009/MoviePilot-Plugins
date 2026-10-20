@@ -78,7 +78,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.7.4"
+    plugin_version = "1.7.5"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -90,6 +90,9 @@ class DualVersionDownloader(_PluginBase):
     plugin_order = 30
     # 可使用的用户级别
     auth_level = 1
+
+    # 手动全量扫描时，「刚补下」多久内不再重复补（小时）
+    _LIBRARY_INFLIGHT_HOURS = 12
 
     # 4K / 1080p 判定
     _RE_4K = re.compile(r"(?i)(\b4k\b|2160[pi]|x2160|\buhd\b)")
@@ -145,6 +148,7 @@ class DualVersionDownloader(_PluginBase):
         self._library_limit: int = 3
         self._library_cooldown_days: int = 30
         self._library_history: Dict[str, str] = {}
+        self._library_missed: Dict[str, str] = {}
         self._scan_running: bool = False
         self._scan_limit_override: Optional[int] = None
         self._scan_ignore_cooldown: bool = False
@@ -228,6 +232,8 @@ class DualVersionDownloader(_PluginBase):
         self._hashes = hashes if isinstance(hashes, dict) else {}
         lib_history = self.get_data("library_history")
         self._library_history = lib_history if isinstance(lib_history, dict) else {}
+        miss_history = self.get_data("library_missed")
+        self._library_missed = miss_history if isinstance(miss_history, dict) else {}
         lib_hashes = self.get_data("library_hashes")
         self._library_hashes = lib_hashes if isinstance(lib_hashes, dict) else {}
         self._prune_history()
@@ -489,6 +495,8 @@ class DualVersionDownloader(_PluginBase):
             f"补下 {last.get('downloaded') or 0}，未命中 {last.get('missed') or 0}，"
             f"跳过 {last.get('skipped') or 0}，失败 {last.get('failed') or 0}"
         )
+        if last.get("in_flight"):
+            base += f"｜另有 {last.get('in_flight')} 部刚补下、正在下载或等待入库"
         if err:
             base += f"（出错：{err}）"
         if with_details:
@@ -755,11 +763,28 @@ class DualVersionDownloader(_PluginBase):
     def _library_in_cooldown(self, key: str) -> bool:
         if self._library_cooldown_days <= 0:
             return False
-        last = (self._library_history or {}).get(key)
+        last = (self._library_history or {}).get(key) or (self._library_missed or {}).get(key)
         if not last:
             return False
         try:
             return datetime.now() - datetime.fromisoformat(last) < timedelta(days=self._library_cooldown_days)
+        except ValueError:
+            return False
+
+    def _library_mark_miss(self, key: str) -> None:
+        """未命中（站点没有合格资源）单独记账：不算在途，手动全量可立刻重试。"""
+        with self._lock:
+            self._library_missed[key] = datetime.now().isoformat(timespec="seconds")
+            self._prune_library_history()
+            self.save_data("library_missed", self._library_missed)
+
+    def _library_in_flight(self, key: str) -> bool:
+        """最近 12 小时内补下过、但库里还没出现 1080p —— 视为在下载/入库途中。"""
+        last = (self._library_history or {}).get(key)
+        if not last:
+            return False
+        try:
+            return datetime.now() - datetime.fromisoformat(last) < timedelta(hours=self._LIBRARY_INFLIGHT_HOURS)
         except ValueError:
             return False
 
@@ -782,6 +807,17 @@ class DualVersionDownloader(_PluginBase):
             newest = sorted(cleaned.items(), key=lambda kv: kv[1], reverse=True)[:2000]
             cleaned = dict(newest)
         self._library_history = cleaned
+        cleaned_miss: Dict[str, str] = {}
+        for key, value in (self._library_missed or {}).items():
+            try:
+                if datetime.fromisoformat(str(value)) >= limit:
+                    cleaned_miss[str(key)] = str(value)
+            except ValueError:
+                continue
+        if len(cleaned_miss) > 2000:
+            newest = sorted(cleaned_miss.items(), key=lambda kv: kv[1], reverse=True)[:2000]
+            cleaned_miss = dict(newest)
+        self._library_missed = cleaned_miss
 
     def _remember_library_hash(self, download_hash: str, tmdb_id: str) -> None:
         """记住本插件补下过的任务，转移完成时用它触发媒体库刷新。"""
@@ -913,19 +949,32 @@ class DualVersionDownloader(_PluginBase):
             summary["scanned"] = len(groups)
             ignore_cooldown = bool(self._scan_ignore_cooldown)
             skipped_cooldown = 0
+            in_flight = 0
             pending = []
             for group in groups.values():
                 if not group.get("has4k") or group.get("has1080"):
                     continue
-                if not ignore_cooldown and self._library_in_cooldown(group.get("key") or ""):
+                key = group.get("key") or ""
+                if ignore_cooldown:
+                    # 手动全量：不认冷却期，但「刚补下、还在下载/入库」的不重复补
+                    if self._library_in_flight(key):
+                        in_flight += 1
+                        continue
+                elif self._library_in_cooldown(key):
                     skipped_cooldown += 1
                     continue
                 pending.append(group)
+            if in_flight:
+                logger.info(
+                    f"双版本补全：另有 {in_flight} 部刚补下、仍在下载或等待入库，"
+                    f"本轮跳过（超过 {self._LIBRARY_INFLIGHT_HOURS} 小时仍缺 1080p 会自动重试）"
+                )
             if skipped_cooldown:
                 logger.info(
                     f"双版本补全：另有 {skipped_cooldown} 部仍在冷却期（{self._library_cooldown_days} 天）内，"
                     "点「手动补全一轮（全部待补）」可强制重试"
                 )
+            summary["in_flight"] = in_flight
             summary["pending"] = len(pending)
             pending.sort(key=lambda g: (-int(g.get("year") or 0), str(g.get("title") or "")))
             plan = pending if limit <= 0 else pending[:limit]
@@ -1044,7 +1093,7 @@ class DualVersionDownloader(_PluginBase):
         except Exception as err:  # noqa: BLE001
             return "fail", f"{head}：搜索出错（{err}）"
         if not candidates:
-            self._library_mark(key)
+            self._library_mark_miss(key)
             stats = self._last_filter_stats or {}
             if stats.get("pix_ok"):
                 why = (
@@ -1056,7 +1105,7 @@ class DualVersionDownloader(_PluginBase):
                     why += f"，例如：{example}"
                 logger.info(f"双版本补全[库补齐]：{head} {why}")
                 return "miss", f"{head}：{why}"
-            self._library_mark(key)
+            self._library_mark_miss(key)
             return "miss", f"{head}：站点没有 {self._target_pix} 资源（共 {stats.get('total', 0)} 个候选）"
 
         best = candidates[0]
