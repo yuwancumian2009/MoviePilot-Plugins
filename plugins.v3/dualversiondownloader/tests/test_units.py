@@ -475,6 +475,16 @@ check("配置页保留状态提示（一条短 VAlert）", 1 <= len(_alerts) <= 
 _hints = [n for n in _walk(form_schema) if "hint" in (n.get("props") or {})]
 check("必要填写指引（hint）仍保留", len(_hints) >= 3, True)
 
+# ------------------------------------------------- 排除词必须按词边界匹配
+_cls = type(man)
+check("排除词不误伤 DTS 音轨", _cls.hit_word("TS", "the secret life of pets 2 2019 bluray 1080p x264 dts 7.1 4audios-cmct"), False)
+check("排除词不误伤 HTC/DTS-HD", _cls.hit_word("TC", "movie 2019 1080p bluray dts-hd ma 5.1 x264"), False)
+check("排除词能命中真实 TS 版本", _cls.hit_word("TS", "movie 2019 ts x264 aac"), True)
+check("排除词能命中 CAM", _cls.hit_word("CAM", "movie 2026 cam xvid"), True)
+check("排除词命中分隔符夹住的 TS", _cls.hit_word("TS", "movie.2019.TS.1080p.mkv"), True)
+check("中文关键词按子串匹配", _cls.hit_word("中字", "某某电影 简中字幕 1080p"), True)
+check("中文关键词未出现则不命中", _cls.hit_word("国语", "某某电影 简中字幕 1080p"), False)
+
 # ---------------------------------------------------------------- 结果
 passed = sum(1 for _, ok in results if ok)
 print(f"\n共 {len(results)} 项，通过 {passed} 项，失败 {len(results) - passed} 项")

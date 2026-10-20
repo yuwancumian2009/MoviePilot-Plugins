@@ -78,7 +78,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.7.3"
+    plugin_version = "1.7.4"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -2091,13 +2091,13 @@ class DualVersionDownloader(_PluginBase):
             kw_text = self._keyword_text(torrent, meta).lower()
             title = getattr(torrent, "title", "") or ""
             reason = ""
-            if excludes and any(word in kw_text for word in excludes):
+            if excludes and any(self.hit_word(word, kw_text) for word in excludes):
                 reason = "命中排除词"
             # 必须包含（全部命中，等价订阅规则的「包含」多关键词）
-            elif requires and not all(word in kw_text for word in requires):
+            elif requires and not all(self.hit_word(word, kw_text) for word in requires):
                 reason = "未同时包含：" + "、".join(requires)
             # 任选其一（命中任一，等价订阅规则的多选项「包含」）
-            elif anys and not any(word in kw_text for word in anys):
+            elif anys and not any(self.hit_word(word, kw_text) for word in anys):
                 reason = "未命中任一：" + "、".join(anys)
             elif self._quality and self._quality_of(text) not in self._quality:
                 reason = "质量不符"
@@ -2131,6 +2131,23 @@ class DualVersionDownloader(_PluginBase):
     def _words(raw: Any) -> List[str]:
         """逗号/空格分隔的关键词表（小写）。"""
         return [word.strip().lower() for word in re.split(r"[,\s]+", str(raw or "")) if word.strip()]
+
+    @staticmethod
+    def hit_word(word: Any, text: str) -> bool:
+        """关键词命中判定。
+
+        含中文的关键词按子串匹配（「中字」要能命中「简中字幕」）；
+        纯拉丁关键词必须落在词边界上，否则「TS」会误伤 DTS 音轨、
+        「TC」会误伤 HTC —— 实测会把绝大多数 1080p 蓝光原盘名全滤掉。
+        """
+        key = str(word or "").strip().lower()
+        if not key:
+            return False
+        body = str(text or "").lower()
+        if re.search(r"[\u4e00-\u9fff]", key):
+            return key in body
+        pattern = r"(?<![a-z0-9])" + re.escape(key) + r"(?![a-z0-9])"
+        return re.search(pattern, body) is not None
 
     @classmethod
     def _quality_of(cls, text: str) -> str:
