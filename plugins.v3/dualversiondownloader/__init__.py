@@ -35,7 +35,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.4.3"
+    plugin_version = "1.4.4"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -299,6 +299,7 @@ class DualVersionDownloader(_PluginBase):
         if not mediainfo:
             return {"ok": False, "message": "TMDB 未识别到该媒体"}
         category_id, category_name = self._resolve_category(mediainfo)
+        matched, detail = self._category_pass(mediainfo)
         return {
             "ok": bool(category_id),
             "title": getattr(mediainfo, "title", None),
@@ -306,7 +307,8 @@ class DualVersionDownloader(_PluginBase):
             "category_id": category_id,
             "category_name": category_name,
             "selected": list(self._categories),
-            "matched": (not self._categories) or (category_id in self._categories),
+            "matched": matched,
+            "detail": detail,
         }
 
     # ------------------------------------------------------------------
