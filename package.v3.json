@@ -59,5 +59,19 @@
       "v2.0.0": "MoviePilot V3 专用分支：导入迁移到 app.sdk 稳定出口，CookieCloud 改用 V3 实际模块路径。"
     },
     "system_version": ">=3.0.0"
+  },
+  "DualVersionDownloader": {
+    "name": "双版本补全",
+    "description": "电影订阅下载 4K 版本时，自动按同一媒体身份再搜索一个 1080p 版本并下载到相同目录；下载 1080p 时不做任何处理。",
+    "labels": "订阅",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/dualversiondownloader.png",
+    "author": "yuwancumian2009",
+    "level": 1,
+    "release": true,
+    "history": {
+      "v1.0.0": "首版：监听 download.added，电影 4K 下载时补下 1080p 到同一目录，支持体积/做种过滤、冷却去重、预演模式。"
+    },
+    "system_version": ">=3.0.0"
   }
 }
