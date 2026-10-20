@@ -35,7 +35,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.4.4"
+    plugin_version = "1.5.0"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -268,6 +268,13 @@ class DualVersionDownloader(_PluginBase):
                 "description": "返回是否运行中、上次扫描结果",
             },
             {
+                "path": "/scan_progress",
+                "endpoint": self.api_scan_progress,
+                "methods": ["GET", "POST"],
+                "summary": "查询当前扫描进度",
+                "description": "返回是否运行中、本轮第几部/共几部、当前正在搜索的影片与已补下数量",
+            },
+            {
                 "path": "/reset_history",
                 "endpoint": self.api_reset_history,
                 "methods": ["GET", "POST"],
@@ -328,20 +335,41 @@ class DualVersionDownloader(_PluginBase):
     def api_scan(self) -> Dict[str, Any]:
         """立即触发一次媒体库补齐扫描（后台线程）。"""
         if not self._library_names:
-            return {"started": False, "running": self._scan_running, "message": "未选择要扫描的媒体库"}
+            return {"started": False, "running": self._scan_is_running(), "message": "未选择要扫描的媒体库"}
         if not self._library_enabled:
-            return {"started": False, "running": self._scan_running, "message": "配置中未开启「媒体库补齐」"}
+            return {
+                "started": False,
+                "running": self._scan_is_running(),
+                "message": "配置里还没打开「启用媒体库补齐」开关，先打开并保存再点扫描",
+            }
+        if self._scan_is_running():
+            prog = self.get_data("library_progress") or {}
+            return {
+                "started": False,
+                "running": True,
+                "message": (
+                    f"扫描已在运行中：{prog.get('current') or '准备中'}"
+                    f"（第 {prog.get('index') or 0}/{prog.get('total') or 0} 部）"
+                ),
+            }
         started = self._start_scan()
+        libs = "、".join(self._library_names)
         return {
             "started": started,
             "running": True,
-            "message": "已开始扫描" if started else "已有扫描在运行，请稍候",
+            "message": (
+                f"已开始扫描 {libs}（最多 {self._library_limit} 部）。"
+                "站点有流控，单部可能要等 1~3 分钟；点「查看扫描进度」可看当前进度，完成后会通知。"
+                if started
+                else "启动失败，请稍后再试"
+            ),
         }
 
     def api_scan_status(self) -> Dict[str, Any]:
         """扫描状态与上次结果。"""
         return {
-            "running": self._scan_running,
+            "running": self._scan_is_running(),
+            "progress": self.get_data("library_progress") or {},
             "enabled": self._library_enabled,
             "libraries": self._library_names,
             "limit": self._library_limit,
@@ -349,6 +377,77 @@ class DualVersionDownloader(_PluginBase):
             "history": len(self._library_history or {}),
             "last": self.get_data("library_last") or {},
         }
+
+    def api_scan_progress(self) -> Dict[str, Any]:
+        """当前扫描进度（按钮「查看扫描进度」用，message 直接给人看）。"""
+        prog = self.get_data("library_progress") or {}
+        last = self.get_data("library_last") or {}
+        running = self._scan_is_running()
+        if running:
+            msg = (
+                f"扫描中：{prog.get('current') or '正在读取媒体库'}"
+                f"（第 {prog.get('index') or 0}/{prog.get('total') or 0} 部）"
+                f"｜已补下 {prog.get('downloaded') or 0} 部"
+                f"｜未命中 {prog.get('missed') or 0} 部"
+                f"｜失败 {prog.get('failed') or 0} 部"
+                f"｜更新于 {str(prog.get('updated_at') or '').replace('T', ' ')}"
+            )
+        elif last:
+            msg = self._last_scan_text()
+        else:
+            msg = "还没有扫描记录，点「立即扫描一次」开始"
+        return {"running": running, "progress": prog, "last": last, "message": msg}
+
+    def _last_scan_text(self) -> str:
+        """上次扫描结果的一句话摘要（页面/接口共用）。"""
+        last = self.get_data("library_last") or {}
+        if not last:
+            return "上次扫描：暂无记录，点「立即扫描一次」开始（首次扫描受站点流控影响可能要几分钟）。"
+        started = str(last.get("started_at") or "").replace("T", " ")
+        err = last.get("error")
+        base = (
+            f"上次扫描 {started}：库内 {last.get('scanned') or 0} 部，"
+            f"只有 4K 无 1080p {last.get('pending') or 0} 部，"
+            f"补下 {last.get('downloaded') or 0}，未命中 {last.get('missed') or 0}，"
+            f"跳过 {last.get('skipped') or 0}，失败 {last.get('failed') or 0}"
+        )
+        if err:
+            base += f"（出错：{err}）"
+        details = [str(d) for d in (last.get("details") or [])[:3]]
+        if details:
+            base += "｜" + "；".join(details)
+        return base
+
+    def _scan_is_running(self) -> bool:
+        """扫描是否在跑：本实例线程标记 + 数据层心跳（防止配置重建后重复启动）。"""
+        if self._scan_running:
+            return True
+        hb = str((self.get_data("scan_lock") or {}).get("heartbeat") or "")
+        if not hb:
+            return False
+        try:
+            age = (datetime.now() - datetime.fromisoformat(hb)).total_seconds()
+        except Exception:  # noqa: BLE001
+            return False
+        return 0 <= age < 900
+
+    def _touch_scan_lock(self) -> None:
+        """写扫描心跳（每部影片更新一次，超过 15 分钟无心跳视为已失效）。"""
+        try:
+            self.save_data("scan_lock", {"heartbeat": datetime.now().isoformat(timespec="seconds")})
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"双版本补全：写扫描心跳失败：{err}")
+
+    def _update_scan_progress(self, **fields: Any) -> None:
+        """更新本轮扫描进度，供「查看扫描进度」与仪表板读取。"""
+        prog = dict(self.get_data("library_progress") or {})
+        prog.update({k: v for k, v in fields.items() if v is not None})
+        prog["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        try:
+            self.save_data("library_progress", prog)
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"双版本补全：写扫描进度失败：{err}")
+        self._touch_scan_lock()
 
     def api_reset_history(self) -> Dict[str, Any]:
         """
@@ -499,9 +598,10 @@ class DualVersionDownloader(_PluginBase):
 
     def _start_scan(self) -> bool:
         with self._scan_lock:
-            if self._scan_running:
+            if self._scan_is_running():
                 return False
             self._scan_running = True
+            self._touch_scan_lock()
         threading.Thread(
             target=self._library_scan_worker, name="DualVersionLibraryScan", daemon=True
         ).start()
@@ -644,7 +744,30 @@ class DualVersionDownloader(_PluginBase):
                 f"本轮处理 {min(len(pending), self._library_limit)} 部"
             )
 
-            for group in pending[: max(0, self._library_limit)]:
+            plan = pending[: max(0, self._library_limit)]
+            total = len(plan)
+            self._update_scan_progress(
+                started_at=started_at,
+                stage="searching",
+                index=0,
+                total=total,
+                current="",
+                downloaded=0,
+                missed=0,
+                failed=0,
+            )
+            for idx, group in enumerate(plan, 1):
+                title = str(group.get("title") or group.get("tmdb") or "")
+                year = str(group.get("year") or "")
+                self._update_scan_progress(
+                    stage="searching",
+                    index=idx,
+                    total=total,
+                    current=f"{title}（{year}）" if year else title,
+                    downloaded=summary["downloaded"],
+                    missed=summary["missed"],
+                    failed=summary["failed"],
+                )
                 status, message = self._backfill_library_movie(group)
                 if status == "ok":
                     summary["downloaded"] += 1
@@ -655,6 +778,15 @@ class DualVersionDownloader(_PluginBase):
                 else:
                     summary["skipped"] += 1
                 details.append(f"{message}")
+                self._update_scan_progress(
+                    stage="searching",
+                    index=idx,
+                    total=total,
+                    current=f"{title}（{year}）" if year else title,
+                    downloaded=summary["downloaded"],
+                    missed=summary["missed"],
+                    failed=summary["failed"],
+                )
                 time.sleep(3)
         except Exception as err:  # noqa: BLE001
             logger.error(f"双版本补全：媒体库扫描出错：{err}", exc_info=True)
@@ -663,6 +795,19 @@ class DualVersionDownloader(_PluginBase):
         finally:
             summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
             self._scan_running = False
+            try:
+                self.save_data("scan_lock", {})
+            except Exception:  # noqa: BLE001
+                pass
+            self._update_scan_progress(
+                stage="done",
+                current="",
+                index=summary.get("downloaded", 0),
+                total=0,
+                downloaded=summary["downloaded"],
+                missed=summary["missed"],
+                failed=summary["failed"],
+            )
             try:
                 self.save_data("library_last", summary)
             except Exception:  # noqa: BLE001
@@ -781,6 +926,7 @@ class DualVersionDownloader(_PluginBase):
         site_items = self._site_options()
         library_items = self._library_options()
         server_items = self._server_options()
+        last_text = self._last_scan_text()
         return [
             {
                 "component": "VForm",
@@ -956,6 +1102,26 @@ class DualVersionDownloader(_PluginBase):
                     {
                         "component": "VRow",
                         "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "info",
+                                            "variant": "tonal",
+                                            "density": "compact",
+                                            "text": last_text,
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
                             self._col_switch("library_enabled", "启用媒体库补齐"),
                             self._col_text("library_limit", "每次最多补几部", "3", md=3),
                             self._col_text("library_cooldown_days", "同一影片重试间隔(天)", "30", md=3),
@@ -1018,12 +1184,28 @@ class DualVersionDownloader(_PluginBase):
                                             "variant": "tonal",
                                             "color": "primary",
                                             "prepend-icon": "mdi-radar",
-                                            "class": "mt-2",
+                                            "class": "mt-2 mr-2",
                                         },
                                         "text": "立即扫描一次",
                                         "events": {
                                             "click": {
                                                 "api": "/plugin/DualVersionDownloader/scan",
+                                                "method": "GET",
+                                            }
+                                        },
+                                    },
+                                    {
+                                        "component": "VBtn",
+                                        "props": {
+                                            "variant": "tonal",
+                                            "color": "info",
+                                            "prepend-icon": "mdi-progress-clock",
+                                            "class": "mt-2",
+                                        },
+                                        "text": "查看扫描进度",
+                                        "events": {
+                                            "click": {
+                                                "api": "/plugin/DualVersionDownloader/scan_progress",
                                                 "method": "GET",
                                             }
                                         },
@@ -1159,7 +1341,18 @@ class DualVersionDownloader(_PluginBase):
                                         f"媒体库={self._library_label() or '未选'}　"
                                         f"每次={self._library_limit} 部　"
                                         f"定时={self._library_cron or '仅手动'}　"
-                                        f"{'扫描中…' if self._scan_running else '空闲'}"
+                                        f"{'扫描中…' if self._scan_is_running() else '空闲'}"
+                                        + (
+                                            "｜正在处理："
+                                            + str(
+                                                (self.get_data("library_progress") or {}).get("current")
+                                                or "读取媒体库"
+                                            )
+                                            + f"（第 {(self.get_data('library_progress') or {}).get('index') or 0}"
+                                            + f"/{(self.get_data('library_progress') or {}).get('total') or 0} 部）"
+                                            if self._scan_is_running()
+                                            else ""
+                                        )
                                     ),
                                 },
                             },

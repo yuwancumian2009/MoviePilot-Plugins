@@ -85,6 +85,21 @@
 | 自动整理 | 入库到 `/影视/电影/外语电影/巅峰猎杀 (2026) [tmdbid-1318447]/`，与 4K 同目录 |
 | Emby 呈现 | 同目录两个 strm（2160p + 1080p），Emby 显示两个版本 |
 
+## 扫描为什么感觉「点了没反应」
+
+扫描是后台线程执行的，页面不会自动刷新；真正的耗时在站点侧——MoviePilot 对站点有**流控**
+（日志里会出现「馒头 站点流控等待 115.7 秒」这类记录），一部片子跑完 9 个站点可能要 1~3 分钟。
+
+所以 v1.5.0 加了三处可见反馈：
+
+1. 点「立即扫描一次」会立刻弹出提示：扫描哪个库、最多几部、预计耗时；
+2. 旁边的「查看扫描进度」按钮随时返回一行进度：`扫描中：奇迹梦之队（2026）（第 2/5 部）｜已补下 1 部…`；
+3. 配置页在按钮下方常驻一行「上次扫描」结果，重新打开页面就能看到上一轮的扫描/补下/未命中数量。
+
+同时加了**跨实例扫描锁**：配置保存会重建插件实例，旧版本因此可能出现两个线程同时扫描；
+现在锁写在插件数据里（带 15 分钟心跳），运行中再次点击只会回一句「扫描已在运行中」，
+不会重复起线程、也不会重复下载同一部片。
+
 ## 自检接口
 
 | 接口 | 说明 |
@@ -94,5 +109,6 @@
 | `GET /api/v1/plugin/DualVersionDownloader/sites` | 站点下拉选项（id + 名称） |
 | `GET /api/v1/plugin/DualVersionDownloader/libraries` | Emby/Jellyfin 电影库清单 |
 | `GET /api/v1/plugin/DualVersionDownloader/scan` | 立即执行一次媒体库补齐扫描（后台线程） |
+| `GET /api/v1/plugin/DualVersionDownloader/scan_progress` | 当前扫描进度（第几部/共几部、正在搜索哪部、已补下数量），`message` 字段可直接读 |
 | `GET /api/v1/plugin/DualVersionDownloader/scan_status` | 扫描状态与上次结果 |
 | `GET /api/v1/plugin/DualVersionDownloader/reset_history` | 清空补齐冷却记录（让已跳过的影片重新参与） |

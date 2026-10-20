@@ -343,6 +343,29 @@ check("cron 服务已注册", len(_services), 1)
 check("cron 触发器为 CronTrigger", type(_services[0]["trigger"]).__name__, "CronTrigger")
 check("非法 cron 不注册", _plugin(enabled=True, library_enabled=True, library_names=["x"], library_cron="bad cron").get_service(), [])
 
+# ---------------------------------------------------------------- 扫描进度 / 并发锁（v1.5.0）
+prog = _plugin(enabled=True, library_enabled=True, library_names=["动画电影"])
+prog._data["scan_lock"] = {"heartbeat": datetime.now().isoformat(timespec="seconds")}
+check("心跳新鲜=运行中", prog._scan_is_running(), True)
+prog._data["scan_lock"] = {"heartbeat": "2020-01-01T00:00:00"}
+check("心跳过期=空闲", prog._scan_is_running(), False)
+prog._data["library_progress"] = {
+    "current": "奇迹梦之队（2026）", "index": 2, "total": 5, "downloaded": 1
+}
+prog._data["scan_lock"] = {"heartbeat": datetime.now().isoformat(timespec="seconds")}
+msg = prog.api_scan_progress()["message"]
+check("进度文案带片名与 2/5", ("奇迹梦之队" in msg and "2/5" in msg), True)
+check("运行中再次点扫描被拒", prog.api_scan()["started"], False)
+prog._data["scan_lock"] = {}
+prog._scan_running = False
+prog._data["library_last"] = {
+    "started_at": "2026-10-20T14:14:34", "scanned": 107, "pending": 32,
+    "downloaded": 1, "missed": 0, "skipped": 0, "failed": 0,
+}
+check("空闲时回显上次结果", "库内 107 部" in prog.api_scan_progress()["message"], True)
+check("未选媒体库时不启动", _plugin(enabled=True, library_enabled=True).api_scan()["started"], False)
+check("未开启补齐时不启动", _plugin(enabled=True, library_enabled=False, library_names=["动画电影"]).api_scan()["started"], False)
+
 # ---------------------------------------------------------------- 结果
 passed = sum(1 for _, ok in results if ok)
 print(f"\n共 {len(results)} 项，通过 {passed} 项，失败 {len(results) - passed} 项")
