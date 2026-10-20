@@ -1,78 +1,39 @@
-import json
 import re
 import threading
-import urllib.request
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.chain.download import DownloadChain
 from app.chain.search import SearchChain
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
-from app.schemas.types import EventType, MediaType, MessageType
+from app.schemas.types import EventType, MediaType, MessageType, SystemConfigKey
 
-# TMDB 类型 id -> 中文名（与 MP 分类词表一致，用于展示与匹配）
-GENRE_NAMES: Dict[str, str] = {
-    "12": "冒险",
-    "14": "奇幻",
-    "16": "动画",
-    "18": "剧情",
-    "27": "恐怖",
-    "28": "动作",
-    "35": "喜剧",
-    "36": "历史",
-    "37": "西部",
-    "53": "惊悚",
-    "80": "犯罪",
-    "99": "纪录",
-    "878": "科幻",
-    "9648": "悬疑",
-    "10402": "音乐",
-    "10749": "爱情",
-    "10751": "家庭",
-    "10752": "战争",
-    "10759": "动作冒险",
-    "10762": "儿童",
-    "10763": "新闻",
-    "10764": "真人秀",
-    "10765": "科幻奇幻",
-    "10766": "肥皂剧",
-    "10767": "脱口秀",
-    "10768": "战争政治",
-    "10770": "电视电影",
-}
-
-MOVIE_GENRE_IDS: List[str] = [
-    "28", "12", "16", "35", "80", "99", "18", "10751", "14",
-    "36", "27", "10402", "9648", "10749", "878", "53", "10752", "37", "10770",
-]
-TV_GENRE_IDS: List[str] = [
-    "10759", "16", "35", "80", "99", "18", "10751", "10762", "9648",
-    "10764", "10765", "10766", "10767", "10768", "10763",
-]
-
-GENRE_NAME_TO_ID: Dict[str, str] = {name: gid for gid, name in GENRE_NAMES.items()}
+try:  # 分类策略为 V3 内建能力，缺失时插件仍可降级运行
+    from app.schemas.category import ClassificationPolicy
+except Exception:  # noqa: BLE001
+    ClassificationPolicy = None  # type: ignore[assignment]
 
 
 class DualVersionDownloader(_PluginBase):
     """
-    双版本补全。
+    双版本补全（仅电影）。
 
-    监听下载添加事件：当电影 / 剧集以 4K 版本开始下载时，按同一媒体身份再搜索一个
-    1080p 版本并下载到与原任务相同的目录；原任务为 1080p 时不做任何处理。
-    支持按媒体库中的类型（动作/剧情/动画…）限定生效范围。
+    监听下载添加事件：当电影以 4K 版本开始下载时，按同一媒体身份再搜索一个 1080p
+    版本并下载到与原任务相同的目录；原任务为 1080p 时不做任何处理。
+    支持按媒体类别（动画电影 / 华语电影 / 外语电影 …）限定生效范围。
     """
 
     # 插件名称
     plugin_name = "双版本补全"
     # 插件描述
-    plugin_desc = "电影/剧集订阅下载 4K 版本时，自动补一个 1080p 版本到同一目录；可按类型限定生效范围"
+    plugin_desc = "电影订阅下载 4K 版本时，自动补一个 1080p 版本到同一目录；可按媒体库类别限定生效范围"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.2.5"
-    version = "1.2.4"
+    plugin_version = "1.3.0"
+    version = "1.3.0"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -88,8 +49,10 @@ class DualVersionDownloader(_PluginBase):
     _RE_4K = re.compile(r"(?i)(\b4k\b|2160[pi]|x2160|\buhd\b)")
     _RE_1080 = re.compile(r"(?i)(1080p|x1080)")
 
-    # 类型缓存有效期
-    _GENRE_CACHE_HOURS = 12
+    # 类别缓存有效期
+    _CATEGORY_CACHE_HOURS = 12
+    # 分类策略在内存中的复用时长
+    _POLICY_TTL_MINUTES = 30
 
     def __init__(self) -> None:
         super().__init__()
@@ -104,13 +67,13 @@ class DualVersionDownloader(_PluginBase):
         self._sites: str = ""
         self._cooldown_days: int = 7
         self._exclude_words: str = "CAM,TS,枪版,TC"
-        self._enable_movie: bool = True
-        self._enable_tv: bool = True
-        self._movie_genres: List[str] = []
-        self._tv_genres: List[str] = []
+        self._categories: List[str] = []
+        self._category_names: Dict[str, str] = {}
         self._config: Dict[str, Any] = {}
         self._history: Dict[str, str] = {}
         self._hashes: Dict[str, str] = {}
+        self._policy_cache: Optional[Any] = None
+        self._policy_cache_at: Optional[datetime] = None
         self._lock = threading.Lock()
 
     # ------------------------------------------------------------------
@@ -130,10 +93,7 @@ class DualVersionDownloader(_PluginBase):
         self._prefer = str(self._config.get("prefer") or "seeders").strip()
         self._sites = str(self._config.get("sites") or "").strip()
         self._exclude_words = str(self._config.get("exclude_words") or "").strip()
-        self._enable_movie = bool(self._config.get("enable_movie", True))
-        self._enable_tv = bool(self._config.get("enable_tv", True))
-        self._movie_genres = self._as_list(self._config.get("movie_genres"))
-        self._tv_genres = self._as_list(self._config.get("tv_genres"))
+        self._categories = self._as_list(self._config.get("categories"))
 
         try:
             self._max_size_gb = float(self._config.get("max_size_gb") or 0)
@@ -154,11 +114,14 @@ class DualVersionDownloader(_PluginBase):
         self._hashes = hashes if isinstance(hashes, dict) else {}
         self._prune_history()
 
+        self._policy_cache = None
+        self._policy_cache_at = None
+        self._category_names = {item["value"]: item["name"] for item in (self._category_options() or [])}
+
         logger.info(
             f"双版本补全：初始化完成，enabled={self._enabled}，target={self._target_pix}，"
             f"dry_run={self._dry_run}，only_subscribe={self._only_subscribe}，"
-            f"电影={self._enable_movie}{self._movie_genres or '(全部类型)'}，"
-            f"剧集={self._enable_tv}{self._tv_genres or '(全部类型)'}，"
+            f"类别={self._category_label(self._categories)}(仅电影)，"
             f"max_size_gb={self._max_size_gb}，min_seeders={self._min_seeders}，"
             f"prefer={self._prefer}，cooldown_days={self._cooldown_days}"
         )
@@ -176,20 +139,17 @@ class DualVersionDownloader(_PluginBase):
     def get_api(self) -> List[Dict[str, Any]]:
         return [
             {
-                "path": "/genres",
-                "endpoint": self.api_genres,
+                "path": "/categories",
+                "endpoint": self.api_categories,
                 "methods": ["GET"],
-                "summary": "获取媒体库中的类型列表",
-                "description": "读取媒体服务器（Emby/Jellyfin）中电影与剧集实际存在的类型，供配置选择",
+                "summary": "获取媒体库类别列表",
+                "description": "读取 MoviePilot 分类策略中启用的电影类别（如动画电影/华语电影/外语电影）",
             }
         ]
 
-    def api_genres(self, refresh: bool = False) -> Dict[str, Any]:
-        """给前端/脚本用的类型清单接口。"""
-        return {
-            "movie": self._genre_options("movie", force=refresh),
-            "tv": self._genre_options("tv", force=refresh),
-        }
+    def api_categories(self, refresh: bool = False) -> Dict[str, Any]:
+        """给前端/脚本用的类别清单接口。"""
+        return {"movie": self._category_options(force=refresh)}
 
     def get_command(self) -> List[Dict[str, Any]]:
         return []
@@ -199,8 +159,7 @@ class DualVersionDownloader(_PluginBase):
     # ------------------------------------------------------------------
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
-        movie_items = self._genre_select_items("movie")
-        tv_items = self._genre_select_items("tv")
+        category_items = self._category_select_items()
         return [
             {
                 "component": "VForm",
@@ -217,57 +176,33 @@ class DualVersionDownloader(_PluginBase):
                     {
                         "component": "VRow",
                         "content": [
-                            self._col_switch("enable_movie", "处理电影"),
-                            self._col_switch("enable_tv", "处理剧集"),
                             self._col_text("target_pix", "补下的分辨率", "1080p"),
                             self._col_text("max_size_gb", "候选最大体积(GB，0为不限)", "0"),
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSelect",
-                                        "props": {
-                                            "model": "movie_genres",
-                                            "label": "生效的电影类型（不选=全部类型）",
-                                            "items": movie_items,
-                                            "multiple": True,
-                                            "chips": True,
-                                            "closableChips": True,
-                                            "clearable": True,
-                                        },
-                                    }
-                                ],
-                            },
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 6},
-                                "content": [
-                                    {
-                                        "component": "VSelect",
-                                        "props": {
-                                            "model": "tv_genres",
-                                            "label": "生效的剧集类型（不选=全部类型）",
-                                            "items": tv_items,
-                                            "multiple": True,
-                                            "chips": True,
-                                            "closableChips": True,
-                                            "clearable": True,
-                                        },
-                                    }
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
                             self._col_text("min_seeders", "候选最少做种数(0为不限)", "0"),
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 8},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "categories",
+                                            "label": "生效的电影类别（不选=全部电影）",
+                                            "items": category_items,
+                                            "multiple": True,
+                                            "chips": True,
+                                            "closableChips": True,
+                                            "clearable": True,
+                                            "hint": "取自 MoviePilot 媒体分类，如 动画电影 / 华语电影 / 外语电影",
+                                        },
+                                    }
+                                ],
+                            },
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
@@ -285,27 +220,14 @@ class DualVersionDownloader(_PluginBase):
                                     }
                                 ],
                             },
-                            self._col_text("cooldown_days", "同一媒体冷却天数(0为不去重)", "7"),
                         ],
                     },
                     {
                         "component": "VRow",
                         "content": [
+                            self._col_text("cooldown_days", "同一影片冷却天数(0为不去重)", "7"),
                             self._col_text("sites", "限定站点ID(逗号分隔，留空为全部)", ""),
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12, "md": 8},
-                                "content": [
-                                    {
-                                        "component": "VTextField",
-                                        "props": {
-                                            "model": "exclude_words",
-                                            "label": "排除关键词(逗号分隔)",
-                                            "placeholder": "CAM,TS,枪版,TC",
-                                        },
-                                    }
-                                ],
-                            },
+                            self._col_text("exclude_words", "排除关键词(逗号分隔)", "CAM,TS,枪版,TC"),
                         ],
                     },
                     {
@@ -321,8 +243,9 @@ class DualVersionDownloader(_PluginBase):
                                             "type": "info",
                                             "variant": "tonal",
                                             "text": (
-                                                "电影与剧集各自独立：下载 4K 时才会触发，补下的资源保存到与 4K 任务"
+                                                "仅处理电影：下载 4K 版本时才会触发，补下的资源保存到与 4K 任务"
                                                 "相同的目录，整理时按命名规则自动区分版本；下载 1080p 不做任何处理。"
+                                                "类别不选表示全部电影都处理。"
                                             ),
                                         },
                                     }
@@ -337,10 +260,7 @@ class DualVersionDownloader(_PluginBase):
             "notify": True,
             "dry_run": False,
             "only_subscribe": True,
-            "enable_movie": True,
-            "enable_tv": True,
-            "movie_genres": [],
-            "tv_genres": [],
+            "categories": [],
             "target_pix": "1080p",
             "max_size_gb": 0,
             "min_seeders": 0,
@@ -355,8 +275,6 @@ class DualVersionDownloader(_PluginBase):
             (self._history or {}).items(), key=lambda kv: kv[1], reverse=True
         )[:20]
         lines = [f"{ts[:19].replace('T', ' ')}  {key}" for key, ts in records]
-        movie_genres = self._genre_label(self._movie_genres) if self._enable_movie else "未启用"
-        tv_genres = self._genre_label(self._tv_genres) if self._enable_tv else "未启用"
         return [
             {
                 "component": "VRow",
@@ -384,7 +302,7 @@ class DualVersionDownloader(_PluginBase):
                                     "type": "secondary",
                                     "variant": "tonal",
                                     "class": "mt-2",
-                                    "text": f"电影类型：{movie_genres}　剧集类型：{tv_genres}",
+                                    "text": f"生效类别：{self._category_label(self._categories)}（仅电影）",
                                 },
                             },
                         ],
@@ -440,25 +358,19 @@ class DualVersionDownloader(_PluginBase):
             ],
         }
 
-    def _genre_select_items(self, mtype: str) -> List[dict]:
-        items = []
-        for item in self._genre_options(mtype):
-            label = item.get("name") or item.get("value")
-            if item.get("in_library"):
-                label = f"{label}（库中已有）"
-            items.append({"title": label, "value": item.get("value")})
-        return items
+    def _category_select_items(self) -> List[dict]:
+        return [
+            {"title": item["name"], "value": item["value"]}
+            for item in (self._category_options() or [])
+        ]
 
-    def _genre_label(self, selected: List[str]) -> str:
+    def _category_label(self, selected: List[str]) -> str:
         if not selected:
-            return "全部类型"
-        labels = []
-        for value in selected:
-            if value.startswith("name:"):
-                labels.append(value[5:])
-            else:
-                labels.append(GENRE_NAMES.get(value, value))
-        return "、".join(labels)
+            return "全部电影"
+        names = self._category_names if self._category_names else {
+            item["value"]: item["name"] for item in (self._category_options() or [])
+        }
+        return "、".join(names.get(value, value) for value in selected)
 
     @staticmethod
     def _as_list(raw: Any) -> List[str]:
@@ -482,142 +394,148 @@ class DualVersionDownloader(_PluginBase):
         return []
 
     # ------------------------------------------------------------------
-    # 类型：探测媒体库 / 选项 / 匹配
+    # 媒体类别：读取分类策略 / 选项 / 判定
     # ------------------------------------------------------------------
 
-    def _genre_options(self, mtype: str, force: bool = False) -> List[dict]:
-        """返回类型选项：优先用媒体库中实际存在的类型，取不到时退回全量词表。"""
-        cache = self.get_data("genre_cache") or {}
+    def _load_policy(self) -> Optional[Any]:
+        """读取 MoviePilot 当前的媒体分类策略（带短时缓存）。"""
+        if ClassificationPolicy is None:
+            return None
+        if self._policy_cache is not None and self._policy_cache_at:
+            if datetime.now() - self._policy_cache_at < timedelta(minutes=self._POLICY_TTL_MINUTES):
+                return self._policy_cache
+        try:
+            raw = self.systemconfig.get(SystemConfigKey.MediaClassificationPolicy)
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"双版本补全：读取分类策略失败：{err}")
+            return self._policy_cache
+        policy = None
+        try:
+            if isinstance(raw, ClassificationPolicy):
+                policy = raw
+            elif isinstance(raw, dict):
+                policy = ClassificationPolicy(**raw)
+            elif isinstance(raw, str) and raw.strip():
+                policy = ClassificationPolicy.model_validate_json(raw)
+        except Exception as err:  # noqa: BLE001
+            logger.debug(f"双版本补全：解析分类策略失败：{err}")
+            return self._policy_cache
+        if policy is not None:
+            self._policy_cache = policy
+            self._policy_cache_at = datetime.now()
+        return policy
+
+    def _policy_categories(self) -> Optional[List[dict]]:
+        """策略中启用的电影类别（顺序即配置顺序）。"""
+        policy = self._load_policy()
+        if policy is None:
+            return None
+        items: List[dict] = []
+        seen = set()
+        for category in getattr(policy, "categories", None) or []:
+            media_type = str(getattr(category, "media_type", "") or "")
+            if media_type and media_type != "电影":
+                continue
+            if not bool(getattr(category, "enabled", True)):
+                continue
+            cid = str(getattr(category, "id", "") or "").strip()
+            name = str(getattr(category, "name", "") or "").strip()
+            if not cid or cid in seen:
+                continue
+            seen.add(cid)
+            items.append({"value": cid, "name": name or cid})
+        return items
+
+    def _category_options(self, force: bool = False) -> List[dict]:
+        """类别选项：优先读分类策略，失败时回退到上次缓存。"""
+        cache = self.get_data("category_cache") or {}
         if not isinstance(cache, dict):
             cache = {}
-        bucket = cache.get(mtype) or {}
         fresh = False
         ts = cache.get("ts")
         if ts:
             try:
-                fresh = datetime.now() - datetime.fromisoformat(str(ts)) < timedelta(hours=self._GENRE_CACHE_HOURS)
+                fresh = datetime.now() - datetime.fromisoformat(str(ts)) < timedelta(
+                    hours=self._CATEGORY_CACHE_HOURS
+                )
             except ValueError:
                 fresh = False
-        if force or not fresh or not bucket.get("items"):
-            probed = self._probe_library_genres(mtype)
-            if probed is not None:
-                bucket = {"items": probed}
-                cache[mtype] = bucket
-                cache["ts"] = datetime.now().isoformat(timespec="seconds")
+        if force or not fresh or not cache.get("items"):
+            probed = self._policy_categories()
+            if probed:
+                cache = {"items": probed, "ts": datetime.now().isoformat(timespec="seconds")}
                 try:
-                    self.save_data("genre_cache", cache)
+                    self.save_data("category_cache", cache)
                 except Exception as err:  # noqa: BLE001
-                    logger.debug(f"双版本补全：保存类型缓存失败：{err}")
+                    logger.debug(f"双版本补全：保存类别缓存失败：{err}")
+        return list(cache.get("items") or [])
 
-        items = bucket.get("items") or []
-        if items:
-            # 库中已有的排在前面
-            return sorted(items, key=lambda x: (not x.get("in_library"), MOVIE_GENRE_IDS.index(x["value"])
-                                                if x.get("value") in MOVIE_GENRE_IDS else 99))
-        # 兜底：全量词表
-        ids = MOVIE_GENRE_IDS if mtype == "movie" else TV_GENRE_IDS
-        return [{"value": gid, "name": GENRE_NAMES.get(gid, gid), "in_library": False} for gid in ids]
-
-    def _probe_library_genres(self, mtype: str) -> Optional[List[dict]]:
-        """从已启用的媒体服务器（Emby/Jellyfin）读取媒体库中实际存在的类型。"""
-        try:
-            from app.sdk.services import MediaServerHelper
-        except Exception as err:  # noqa: BLE001
-            logger.debug(f"双版本补全：媒体服务器模块不可用：{err}")
-            return None
-
-        item_type = "Movie" if mtype == "movie" else "Series"
-        found: Dict[str, dict] = {}
-        probed_any = False
-        try:
-            configs = MediaServerHelper().get_configs(include_disabled=False) or {}
-        except Exception as err:  # noqa: BLE001
-            logger.debug(f"双版本补全：读取媒体服务器配置失败：{err}")
-            return None
-
-        for name, conf in configs.items():
+    def _resolve_category(self, mediainfo: Any) -> Tuple[Optional[str], str]:
+        """按 MoviePilot 分类策略算出该影片所属类别，返回 (类别ID, 类别名)。"""
+        policy = self._load_policy()
+        if policy is not None:
             try:
-                dump = conf.model_dump() if hasattr(conf, "model_dump") else dict(conf)
-            except Exception:  # noqa: BLE001
-                continue
-            cfg = dump.get("config") or {}
-            host = str(dump.get("host") or cfg.get("host") or "").rstrip("/")
-            apikey = dump.get("apikey") or cfg.get("apikey") or cfg.get("api_key")
-            if not host or not apikey:
-                continue
-            url = f"{host}/Genres?Recursive=true&IncludeItemTypes={item_type}&api_key={apikey}"
-            try:
-                with urllib.request.urlopen(url, timeout=10) as resp:
-                    payload = json.loads(resp.read().decode("utf-8", "ignore"))
+                from app.application.classification.analysis import (
+                    build_classification_facts_from_media,
+                )
+                from app.application.classification.execution import (
+                    evaluate_classification_facts,
+                )
+
+                facts = build_classification_facts_from_media(mediainfo)
+                evaluation = evaluate_classification_facts(policy, facts)
+                result = getattr(evaluation, "result", None) or evaluation
+                selection = getattr(result, "effective", None) or getattr(result, "recommended", None)
+                if selection is not None:
+                    cid = getattr(selection, "category_id", None)
+                    path = list(getattr(selection, "category_path", None) or [])
+                    name = self._category_name_of(policy, cid) or (" / ".join(path) if path else "")
+                    return (str(cid) if cid else None), name
             except Exception as err:  # noqa: BLE001
-                logger.debug(f"双版本补全：媒体服务器 {name} 类型读取失败：{err}")
-                continue
-            probed_any = True
-            for item in payload.get("Items") or []:
-                genre_name = (item.get("Name") or "").strip()
-                if not genre_name:
-                    continue
-                gid = GENRE_NAME_TO_ID.get(genre_name)
-                key = gid or f"name:{genre_name}"
-                found[key] = {"value": key, "name": genre_name, "in_library": True}
-        if not probed_any:
-            return None
-        return list(found.values())
+                logger.debug(f"双版本补全：分类求值失败，改用媒体自带类别：{err}")
 
-    def _genres_of(self, mediainfo: Any) -> Tuple[Set[str], Set[str]]:
-        """取媒体的类型 id 与名称，缺失时回查 TMDB。"""
-        ids: Set[str] = set()
-        names: Set[str] = set()
-        for genre in getattr(mediainfo, "genres", None) or []:
-            gid = getattr(genre, "id", None)
-            name = getattr(genre, "name", None)
-            if gid is not None:
-                ids.add(str(gid))
-            if name:
-                names.add(str(name))
-        for gid in getattr(mediainfo, "genre_ids", None) or []:
-            ids.add(str(gid))
-        if ids or names:
-            return ids, names
+        # 回退：媒体对象自带的分类结果 / 兼容字段
+        classification = getattr(mediainfo, "classification", None)
+        selection = getattr(classification, "effective", None) or getattr(
+            classification, "recommended", None
+        )
+        if selection is not None:
+            cid = getattr(selection, "category_id", None)
+            path = list(getattr(selection, "category_path", None) or [])
+            if cid:
+                return str(cid), (" / ".join(path) if path else str(cid))
+        for attr in ("library_category", "category"):
+            value = getattr(mediainfo, attr, None)
+            if value:
+                text = " / ".join(value) if isinstance(value, (list, tuple)) else str(value)
+                return None, text.strip()
+        return None, ""
 
-        tmdb_id = getattr(mediainfo, "tmdb_id", None)
-        if not tmdb_id:
-            return ids, names
-        media_type = self._media_type_of(mediainfo)
-        try:
-            from app.modules.themoviedb.tmdbapi import TmdbApi
+    @staticmethod
+    def _category_name_of(policy: Any, category_id: Optional[str]) -> str:
+        if not category_id:
+            return ""
+        for category in getattr(policy, "categories", None) or []:
+            if str(getattr(category, "id", "")) == str(category_id):
+                return str(getattr(category, "name", "") or "")
+        return ""
 
-            info = TmdbApi().get_info(
-                MediaType.TV if media_type == MediaType.TV.value else MediaType.MOVIE, int(tmdb_id)
-            )
-        except Exception as err:  # noqa: BLE001
-            logger.debug(f"双版本补全：查询 TMDB 类型失败：{err}")
-            return ids, names
-        if not info:
-            return ids, names
-        payload = dict(info) if not isinstance(info, dict) else info
-        for gid in payload.get("genre_ids") or []:
-            ids.add(str(gid))
-        for genre in payload.get("genres") or []:
-            if isinstance(genre, dict):
-                if genre.get("id") is not None:
-                    ids.add(str(genre["id"]))
-                if genre.get("name"):
-                    names.add(str(genre["name"]))
-        return ids, names
-
-    def _genre_pass(self, mediainfo: Any, selected: List[str]) -> bool:
-        """选中的类型与媒体类型有交集则通过；未选表示不限。"""
-        if not selected:
-            return True
-        ids, names = self._genres_of(mediainfo)
-        for value in selected:
-            if value.startswith("name:"):
-                if value[5:] in names:
-                    return True
-            elif value in ids:
-                return True
-        return False
+    def _category_pass(self, mediainfo: Any) -> Tuple[bool, str]:
+        """类别命中判定：未选类别时全部通过。"""
+        if not self._categories:
+            return True, ""
+        cid, name = self._resolve_category(mediainfo)
+        if cid and cid in self._categories:
+            return True, name
+        if not cid and name:
+            # 兼容用户手填类别名（如"动画电影"）的情况
+            selected_names = {
+                self._category_names.get(value, value) for value in self._categories
+            }
+            for token in re.split(r"\s*/\s*", name):
+                if token and token in selected_names:
+                    return True, name
+        return False, name or "未判定"
 
     # ------------------------------------------------------------------
     # 事件处理
@@ -625,7 +543,7 @@ class DualVersionDownloader(_PluginBase):
 
     @eventmanager.register(EventType.DownloadAdded)
     def on_download_added(self, event: Event) -> None:
-        """下载任务添加后判定：电影/剧集、仅 4K、类型命中、且非本插件自己补下的任务。"""
+        """下载任务添加后判定：电影、仅 4K、类别命中、且非本插件自己补下的任务。"""
         if not self._enabled:
             return
         try:
@@ -639,22 +557,15 @@ class DualVersionDownloader(_PluginBase):
             meta = getattr(context, "meta_info", None)
             torrent = getattr(context, "torrent_info", None)
             if not mediainfo or not meta:
-                logger.debug(f"双版本补全：事件缺少 mediainfo/meta_info（mediainfo={bool(mediainfo)}，meta={bool(meta)}），跳过")
+                logger.debug(
+                    f"双版本补全：事件缺少 mediainfo/meta_info（mediainfo={bool(mediainfo)}，"
+                    f"meta={bool(meta)}），跳过"
+                )
                 return
 
             media_type = self._media_type_of(mediainfo)
-            if media_type == MediaType.MOVIE.value:
-                if not self._enable_movie:
-                    logger.debug("双版本补全：未启用电影处理，跳过")
-                    return
-                selected = self._movie_genres
-            elif media_type == MediaType.TV.value:
-                if not self._enable_tv:
-                    logger.debug("双版本补全：未启用剧集处理，跳过")
-                    return
-                selected = self._tv_genres
-            else:
-                logger.debug(f"双版本补全：不支持的媒体类型 {media_type}，跳过")
+            if media_type != MediaType.MOVIE.value:
+                logger.debug(f"双版本补全：仅处理电影，跳过媒体类型 {media_type}")
                 return
 
             source = str(data.get("source") or "")
@@ -668,18 +579,18 @@ class DualVersionDownloader(_PluginBase):
                 return
             if self._RE_1080.search(text):
                 # 标题里同时出现 1080 与 4K（如合集/多版本包）时不动，避免误判
-                logger.debug(f"双版本补全：标题同时命中 1080p，跳过：{text}")
+                logger.debug(f"双版本补全：标题同时命中 1080p，跳过：{text[:120]}")
                 return
 
-            if not self._genre_pass(mediainfo, selected):
+            passed, category_name = self._category_pass(mediainfo)
+            if not passed:
                 logger.info(
-                    f"双版本补全：{getattr(mediainfo, 'title', '')} 类型不符（{self._genre_label(selected)}），跳过"
+                    f"双版本补全：{getattr(mediainfo, 'title', '')} 类别不符"
+                    f"（{category_name}，仅处理 {self._category_label(self._categories)}），跳过"
                 )
                 return
 
-            targets = self._target_episodes(context)
-            season = self._season_of(context)
-            media_key = self._media_key(mediainfo, targets, season)
+            media_key = self._media_key(mediainfo)
             if not media_key:
                 logger.debug(f"双版本补全：无法生成媒体键（{getattr(mediainfo, 'title', '')}），跳过")
                 return
@@ -701,7 +612,7 @@ class DualVersionDownloader(_PluginBase):
 
             threading.Thread(
                 target=self._complete,
-                args=(media_key, context, data),
+                args=(media_key, context, data, category_name),
                 name="DualVersionComplete",
                 daemon=True,
             ).start()
@@ -712,26 +623,20 @@ class DualVersionDownloader(_PluginBase):
     # 内部实现
     # ------------------------------------------------------------------
 
-    def _complete(self, media_key: str, context: Any, data: Dict[str, Any]) -> None:
+    def _complete(self, media_key: str, context: Any, data: Dict[str, Any], category_name: str = "") -> None:
         """搜索并补下目标分辨率版本。"""
         mediainfo = context.media_info
         downloader = data.get("downloader")
         download_hash = data.get("hash")
         username = data.get("username")
         title = f"{getattr(mediainfo, 'title', '') or ''} ({getattr(mediainfo, 'year', '') or ''})"
-        targets = self._target_episodes(context)
-        season = self._season_of(context)
-        if targets:
-            ep_text = ",".join(f"{x:02d}" for x in sorted(targets))
-            episode_hint = f" S{season:02d}E{ep_text}" if season else f" E{ep_text}"
-        else:
-            episode_hint = f" S{season}" if season else ""
+        tag = f"［{category_name}］" if category_name else ""
         try:
             save_path = self._resolve_save_path(download_hash, downloader)
-            candidates = self._search_candidates(mediainfo, targets, season)
+            candidates = self._search_candidates(mediainfo)
             if not candidates:
-                logger.info(f"双版本补全：{title}{episode_hint} 未找到可用的 {self._target_pix} 候选")
-                self._notify(f"{title}{episode_hint} 未找到可用的 {self._target_pix} 版本", ok=False)
+                logger.info(f"双版本补全：{title} 未找到可用的 {self._target_pix} 候选")
+                self._notify(f"{title} 未找到可用的 {self._target_pix} 版本", ok=False)
                 return
 
             best = candidates[0]
@@ -741,15 +646,14 @@ class DualVersionDownloader(_PluginBase):
 
             if self._dry_run:
                 logger.info(
-                    f"双版本补全[预演]：{title}{episode_hint} 将补下 {self._target_pix}：{best_title}"
+                    f"双版本补全[预演]：{title}{tag} 将补下 {self._target_pix}：{best_title}"
                     f"（{best_site}，{size_gb}GB，保存目录 {save_path or '默认'}）"
                 )
-                self._notify(f"{title}{episode_hint} 预演命中：{best_title}（{size_gb}GB），未实际下载", ok=True)
+                self._notify(f"{title} 预演命中：{best_title}（{size_gb}GB），未实际下载", ok=True)
                 return
 
             result = DownloadChain().download_single(
                 context=best,
-                episodes=targets or None,
                 save_path=save_path,
                 downloader=downloader,
                 username=username,
@@ -757,23 +661,22 @@ class DualVersionDownloader(_PluginBase):
             )
             if result:
                 logger.info(
-                    f"双版本补全：{title}{episode_hint} 已补下 {self._target_pix}：{best_title}"
+                    f"双版本补全：{title}{tag} 已补下 {self._target_pix}：{best_title}"
                     f"（{best_site}，{size_gb}GB，hash={result}）"
                 )
-                self._notify(f"{title}{episode_hint} 已补下 {self._target_pix}：{best_title}（{size_gb}GB）", ok=True)
+                self._notify(f"{title} 已补下 {self._target_pix}：{best_title}（{size_gb}GB）", ok=True)
             else:
-                logger.warn(f"双版本补全：{title}{episode_hint} 补下失败（下载器未接受任务）：{best_title}")
-                self._notify(f"{title}{episode_hint} 补下失败：{best_title}", ok=False)
+                logger.warn(f"双版本补全：{title} 补下失败（下载器未接受任务）：{best_title}")
+                self._notify(f"{title} 补下失败：{best_title}", ok=False)
         except Exception as err:  # noqa: BLE001
-            logger.error(f"双版本补全：{title}{episode_hint} 补下过程出错：{err}", exc_info=True)
-            self._notify(f"{title}{episode_hint} 补下出错：{err}", ok=False)
+            logger.error(f"双版本补全：{title} 补下过程出错：{err}", exc_info=True)
+            self._notify(f"{title} 补下出错：{err}", ok=False)
         finally:
             with self._lock:
                 self._history[media_key] = datetime.now().isoformat(timespec="seconds")
                 self._save_state()
 
-    def _search_candidates(self, mediainfo: Any, targets: Optional[Set[int]] = None,
-                           season: Optional[int] = None) -> List[Any]:
+    def _search_candidates(self, mediainfo: Any) -> List[Any]:
         """按媒体身份搜索，过滤出目标分辨率的候选并排序。"""
         sites = None
         if self._sites:
@@ -784,10 +687,9 @@ class DualVersionDownloader(_PluginBase):
 
         contexts = SearchChain().process(mediainfo=mediainfo, sites=sites) or []
         logger.info(f"双版本补全：搜索到 {len(contexts)} 个候选资源")
-        return self._filter_candidates(contexts, targets, season)
+        return self._filter_candidates(contexts)
 
-    def _filter_candidates(self, contexts: List[Any], targets: Optional[Set[int]] = None,
-                           season: Optional[int] = None) -> List[Any]:
+    def _filter_candidates(self, contexts: List[Any]) -> List[Any]:
         """从搜索结果里挑出目标分辨率的候选并排序（纯函数，便于自测）。"""
         excludes = [w.strip().lower() for w in re.split(r"[,\s]+", self._exclude_words) if w.strip()]
         picked: List[Any] = []
@@ -801,12 +703,6 @@ class DualVersionDownloader(_PluginBase):
                 continue
             if any(word in text.lower() for word in excludes):
                 continue
-            if targets and season:
-                cand_season = self._season_of_item(item)
-                if cand_season is not None and cand_season != season:
-                    continue
-            if targets and not self._covers_episodes(item, targets):
-                continue
             size = getattr(torrent, "size", 0) or 0
             if self._max_size_gb > 0 and size > self._max_size_gb * 1024 ** 3:
                 continue
@@ -815,65 +711,12 @@ class DualVersionDownloader(_PluginBase):
             picked.append(item)
 
         if self._prefer == "size":
-            picked.sort(key=lambda c: (self._episode_specificity(c, targets),
-                                       getattr(c.torrent_info, "size", 0) or 0,
+            picked.sort(key=lambda c: (getattr(c.torrent_info, "size", 0) or 0,
                                        -(getattr(c.torrent_info, "seeders", 0) or 0)))
         else:
-            picked.sort(key=lambda c: (self._episode_specificity(c, targets),
-                                       -(getattr(c.torrent_info, "seeders", 0) or 0),
+            picked.sort(key=lambda c: (-(getattr(c.torrent_info, "seeders", 0) or 0),
                                        getattr(c.torrent_info, "size", 0) or 0))
         return picked
-
-    @staticmethod
-    def _episode_specificity(item: Any, targets: Optional[Set[int]] = None) -> int:
-        """候选对目标集的"精确程度"：0=元数据明确列出集号，1=标题写明目标集号，2=无集信息（可能是整季包）。
-
-        排序时优先精确命中，避免单集需求被做种数更高的整季包顶掉。
-        """
-        if not targets:
-            return 0
-        meta = getattr(item, "meta_info", None)
-        if getattr(meta, "episode_list", None):
-            return 0
-        torrent = getattr(item, "torrent_info", None)
-        text = " ".join(str(x) for x in (
-            getattr(torrent, "title", "") or "",
-            getattr(meta, "org_string", "") or "",
-        ) if x)
-        found = {int(m) for m in re.findall(r"(?i)(?<![a-z0-9])s\d{1,2}e(\d{1,3})(?:v\d)?(?![0-9])", text)}
-        found |= {int(m) for m in re.findall(r"(?i)(?<![a-z0-9])e(\d{1,3})(?:v\d)?(?![0-9])", text)}
-        return 1 if found & targets else 2
-
-    @staticmethod
-    def _season_of_item(item: Any) -> Optional[int]:
-        """候选资源所属季：优先 MetaInfo.season_list，其次从种子标题里解析 Sxx。"""
-        meta = getattr(item, "meta_info", None)
-        for value in getattr(meta, "season_list", None) or []:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                continue
-        torrent = getattr(item, "torrent_info", None)
-        text = " ".join(str(x) for x in (
-            getattr(torrent, "title", "") or "",
-            getattr(meta, "org_string", "") or "",
-        ) if x)
-        match = re.search(r"(?i)(?:^|[^a-z0-9])s(\d{1,2})(?:e\d{1,3})?(?:[^a-z0-9]|$)", text)
-        if match:
-            try:
-                return int(match.group(1))
-            except ValueError:
-                return None
-        return None
-
-    @staticmethod
-    def _covers_episodes(item: Any, targets: Set[int]) -> bool:
-        """候选是否覆盖目标集数：整季包（无集信息）或集列表包含目标集。"""
-        meta = getattr(item, "meta_info", None)
-        episodes = set(getattr(meta, "episode_list", None) or [])
-        if not episodes:
-            return True
-        return targets.issubset(episodes)
 
     @staticmethod
     def _pix_text(torrent: Any, meta: Any) -> str:
@@ -889,32 +732,6 @@ class DualVersionDownloader(_PluginBase):
     def _media_type_of(mediainfo: Any) -> Optional[str]:
         media_type = getattr(mediainfo, "type", None)
         return getattr(media_type, "value", media_type)
-
-    @staticmethod
-    def _target_episodes(context: Any) -> Set[int]:
-        """剧集：取本次下载要补的集数；电影返回空集。"""
-        episodes: Set[int] = set()
-        for holder in (getattr(context, "media_info", None), getattr(context, "meta_info", None)):
-            for value in getattr(holder, "episode_list", None) or []:
-                try:
-                    episodes.add(int(value))
-                except (TypeError, ValueError):
-                    continue
-            if episodes:
-                break
-        if episodes:
-            return episodes
-        meta = getattr(context, "meta_info", None)
-        begin = getattr(meta, "begin_episode", None)
-        end = getattr(meta, "end_episode", None)
-        if begin:
-            try:
-                begin = int(begin)
-                end = int(end) if end else begin
-                return set(range(begin, end + 1))
-            except (TypeError, ValueError):
-                return set()
-        return set()
 
     def _resolve_save_path(self, download_hash: Optional[str], downloader: Optional[str]) -> Optional[str]:
         """读取原 4K 任务的保存目录，保证两版落在同一文件夹。"""
@@ -933,49 +750,15 @@ class DualVersionDownloader(_PluginBase):
         return None
 
     @staticmethod
-    @staticmethod
-    def _season_of(context: Any) -> Optional[int]:
-        """剧集：推断本次下载的季号（MediaInfo 无 season_id，回退 MetaInfo.season_list / seasons 键）。"""
-        mediainfo = getattr(context, "media_info", None)
-        meta = getattr(context, "meta_info", None)
-        for value in (getattr(mediainfo, "season_id", None),):
-            try:
-                if value:
-                    return int(value)
-            except (TypeError, ValueError):
-                pass
-        for value in getattr(meta, "season_list", None) or []:
-            try:
-                return int(value)
-            except (TypeError, ValueError):
-                continue
-        seasons = getattr(mediainfo, "seasons", None) or {}
-        if isinstance(seasons, dict):
-            keys: List[int] = []
-            for key in seasons.keys():
-                try:
-                    keys.append(int(key))
-                except (TypeError, ValueError):
-                    continue
-            if len(keys) == 1:
-                return keys[0]
-        return None
-
-    @staticmethod
-    def _media_key(mediainfo: Any, targets: Optional[Set[int]] = None, season: Optional[int] = None) -> Optional[str]:
+    def _media_key(mediainfo: Any) -> Optional[str]:
         source = getattr(mediainfo, "media_source", None)
         media_id = getattr(mediainfo, "media_id", None)
         if source and media_id:
-            base = f"{getattr(source, 'value', source)}:{media_id}"
-        else:
-            tmdb_id = getattr(mediainfo, "tmdb_id", None)
-            if not tmdb_id:
-                return None
-            base = f"tmdb:{tmdb_id}"
-        season = season if season else getattr(mediainfo, "season_id", None)
-        if season:
-            return f"{base}:S{season}"
-        return base
+            return f"{getattr(source, 'value', source)}:{media_id}"
+        tmdb_id = getattr(mediainfo, "tmdb_id", None)
+        if not tmdb_id:
+            return None
+        return f"tmdb:{tmdb_id}"
 
     def _in_cooldown(self, media_key: str) -> bool:
         if self._cooldown_days <= 0:
