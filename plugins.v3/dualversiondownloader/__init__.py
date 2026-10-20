@@ -33,8 +33,8 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.3.0"
-    version = "1.3.0"
+    plugin_version = "1.3.1"
+    version = "1.3.1"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -145,12 +145,48 @@ class DualVersionDownloader(_PluginBase):
                 "methods": ["GET"],
                 "summary": "获取媒体库类别列表",
                 "description": "读取 MoviePilot 分类策略中启用的电影类别（如动画电影/华语电影/外语电影）",
-            }
+            },
+            {
+                "path": "/probe",
+                "endpoint": self.api_probe,
+                "methods": ["POST"],
+                "summary": "试算一部电影的类别",
+                "description": "传 tmdb_id，返回该片命中的媒体类别及是否在当前生效范围内（不下载）",
+            },
         ]
 
     def api_categories(self, refresh: bool = False) -> Dict[str, Any]:
         """给前端/脚本用的类别清单接口。"""
         return {"movie": self._category_options(force=refresh)}
+
+    def api_probe(self, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """试算类别：用于验证分类链路，不产生任何下载。"""
+        payload = payload or {}
+        tmdb_id = str(payload.get("tmdb_id") or payload.get("tmdbid") or "").strip()
+        if not tmdb_id:
+            return {"ok": False, "message": "缺少 tmdb_id"}
+        try:
+            from app.chain.media import MediaChain
+            from app.schemas.types import MediaSource
+
+            mediainfo = MediaChain().recognize_media(
+                mtype=MediaType.MOVIE, media_source=MediaSource.TMDB, media_id=tmdb_id
+            )
+        except Exception as err:  # noqa: BLE001
+            logger.error(f"双版本补全：试算识别失败：{err}")
+            return {"ok": False, "message": f"识别失败：{err}"}
+        if not mediainfo:
+            return {"ok": False, "message": "TMDB 未识别到该媒体"}
+        category_id, category_name = self._resolve_category(mediainfo)
+        return {
+            "ok": bool(category_id),
+            "title": getattr(mediainfo, "title", None),
+            "year": getattr(mediainfo, "year", None),
+            "category_id": category_id,
+            "category_name": category_name,
+            "selected": list(self._categories),
+            "matched": (not self._categories) or (category_id in self._categories),
+        }
 
     def get_command(self) -> List[Dict[str, Any]]:
         return []
