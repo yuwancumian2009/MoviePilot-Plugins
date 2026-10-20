@@ -8,7 +8,7 @@ from app.chain.search import SearchChain
 from app.sdk.events import Event, eventmanager
 from app.sdk.logging import logger
 from app.sdk.plugin import _PluginBase
-from app.schemas.types import EventType, MediaType, NotificationType
+from app.schemas.types import EventType, MediaType, MessageType
 
 
 class DualVersionDownloader(_PluginBase):
@@ -24,9 +24,9 @@ class DualVersionDownloader(_PluginBase):
     # 插件描述
     plugin_desc = "电影订阅下载 4K 版本时，自动补一个 1080p 版本到同一目录；下载 1080p 时不做处理"
     # 插件图标
-    plugin_icon = "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/dualversiondownloader.png"
+    plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -45,7 +45,7 @@ class DualVersionDownloader(_PluginBase):
     def __init__(self) -> None:
         super().__init__()
         self._enabled: bool = False
-        self._notify: bool = True
+        self._notify_enabled: bool = True
         self._dry_run: bool = False
         self._only_subscribe: bool = True
         self._target_pix: str = "1080p"
@@ -69,7 +69,7 @@ class DualVersionDownloader(_PluginBase):
         self._config = config or {}
 
         self._enabled = bool(self._config.get("enabled", False))
-        self._notify = bool(self._config.get("notify", True))
+        self._notify_enabled = bool(self._config.get("notify", True))
         self._dry_run = bool(self._config.get("dry_run", False))
         self._only_subscribe = bool(self._config.get("only_subscribe", True))
         self._target_pix = str(self._config.get("target_pix") or "1080p").strip()
@@ -414,10 +414,10 @@ class DualVersionDownloader(_PluginBase):
                 logger.debug(f"双版本补全：标题同时命中 1080p，跳过：{text}")
                 return
 
-            media_key = self.__media_key(mediainfo)
+            media_key = self._media_key(mediainfo)
             if not media_key:
                 return
-            if self.__in_cooldown(media_key):
+            if self._in_cooldown(media_key):
                 logger.debug(f"双版本补全：{media_key} 在冷却期内，跳过")
                 return
 
@@ -429,7 +429,7 @@ class DualVersionDownloader(_PluginBase):
                 self._history[media_key] = datetime.now().isoformat(timespec="seconds")
 
             threading.Thread(
-                target=self.__complete,
+                target=self._complete,
                 args=(media_key, context, data),
                 name="DualVersionComplete",
                 daemon=True,
@@ -441,7 +441,7 @@ class DualVersionDownloader(_PluginBase):
     # 内部实现
     # ------------------------------------------------------------------
 
-    def __complete(self, media_key: str, context: Any, data: Dict[str, Any]) -> None:
+    def _complete(self, media_key: str, context: Any, data: Dict[str, Any]) -> None:
         """搜索并补下目标分辨率版本。"""
         mediainfo = context.media_info
         downloader = data.get("downloader")
@@ -449,11 +449,11 @@ class DualVersionDownloader(_PluginBase):
         username = data.get("username")
         title = f"{getattr(mediainfo, 'title', '') or ''} ({getattr(mediainfo, 'year', '') or ''})"
         try:
-            save_path = self.__resolve_save_path(download_hash, downloader)
-            candidates = self.__search_candidates(mediainfo)
+            save_path = self._resolve_save_path(download_hash, downloader)
+            candidates = self._search_candidates(mediainfo)
             if not candidates:
                 logger.info(f"双版本补全：{title} 未找到可用的 {self._target_pix} 候选")
-                self.__notify(f"{title} 未找到可用的 {self._target_pix} 版本", ok=False)
+                self._notify(f"{title} 未找到可用的 {self._target_pix} 版本", ok=False)
                 return
 
             best = candidates[0]
@@ -466,7 +466,7 @@ class DualVersionDownloader(_PluginBase):
                     f"双版本补全[预演]：{title} 将补下 {self._target_pix}：{best_title}"
                     f"（{best_site}，{size_gb}GB，保存目录 {save_path or '默认'}）"
                 )
-                self.__notify(f"{title} 预演命中：{best_title}（{size_gb}GB），未实际下载", ok=True)
+                self._notify(f"{title} 预演命中：{best_title}（{size_gb}GB），未实际下载", ok=True)
                 return
 
             result = DownloadChain().download_single(
@@ -481,20 +481,20 @@ class DualVersionDownloader(_PluginBase):
                     f"双版本补全：{title} 已补下 {self._target_pix}：{best_title}"
                     f"（{best_site}，{size_gb}GB，hash={result}）"
                 )
-                self.__notify(f"{title} 已补下 {self._target_pix}：{best_title}（{size_gb}GB）", ok=True)
+                self._notify(f"{title} 已补下 {self._target_pix}：{best_title}（{size_gb}GB）", ok=True)
             else:
                 logger.warn(f"双版本补全：{title} 补下失败（下载器未接受任务）：{best_title}")
-                self.__notify(f"{title} 补下失败：{best_title}", ok=False)
+                self._notify(f"{title} 补下失败：{best_title}", ok=False)
         except Exception as err:  # noqa: BLE001
             logger.error(f"双版本补全：{title} 补下过程出错：{err}", exc_info=True)
-            self.__notify(f"{title} 补下出错：{err}", ok=False)
+            self._notify(f"{title} 补下出错：{err}", ok=False)
         finally:
             with self._lock:
                 self._history[media_key] = datetime.now().isoformat(timespec="seconds")
-                self.__prune_history()
+                self._prune_history()
                 self.save_data("history", self._history)
 
-    def __search_candidates(self, mediainfo: Any) -> List[Any]:
+    def _search_candidates(self, mediainfo: Any) -> List[Any]:
         """按媒体身份搜索，过滤出目标分辨率的候选并排序。"""
         sites = None
         if self._sites:
@@ -538,7 +538,7 @@ class DualVersionDownloader(_PluginBase):
                                        getattr(c.torrent_info, "size", 0) or 0))
         return picked
 
-    def __resolve_save_path(self, download_hash: Optional[str], downloader: Optional[str]) -> Optional[str]:
+    def _resolve_save_path(self, download_hash: Optional[str], downloader: Optional[str]) -> Optional[str]:
         """读取原 4K 任务的保存目录，保证两版落在同一文件夹。"""
         if not download_hash:
             return None
@@ -554,7 +554,7 @@ class DualVersionDownloader(_PluginBase):
         logger.info("双版本补全：未能读取原任务保存路径，将使用默认下载目录")
         return None
 
-    def __media_key(self, mediainfo: Any) -> Optional[str]:
+    def _media_key(self, mediainfo: Any) -> Optional[str]:
         source = getattr(mediainfo, "media_source", None)
         media_id = getattr(mediainfo, "media_id", None)
         if source and media_id:
@@ -564,7 +564,7 @@ class DualVersionDownloader(_PluginBase):
             return f"tmdb:{tmdb_id}"
         return None
 
-    def __in_cooldown(self, media_key: str) -> bool:
+    def _in_cooldown(self, media_key: str) -> bool:
         if self._cooldown_days <= 0:
             return False
         last = (self._history or {}).get(media_key)
@@ -576,7 +576,7 @@ class DualVersionDownloader(_PluginBase):
             return False
         return datetime.now() - last_dt < timedelta(days=self._cooldown_days)
 
-    def __prune_history(self) -> None:
+    def _prune_history(self) -> None:
         """保留最近 500 条、90 天内的记录。"""
         if not isinstance(self._history, dict):
             self._history = {}
@@ -594,12 +594,12 @@ class DualVersionDownloader(_PluginBase):
             cleaned = dict(newest)
         self._history = cleaned
 
-    def __notify(self, text: str, ok: bool = True) -> None:
-        if not self._notify:
+    def _notify(self, text: str, ok: bool = True) -> None:
+        if not self._notify_enabled:
             return
         try:
             self.post_message(
-                mtype=NotificationType.Plugin,
+                mtype=MessageType.Plugin,
                 title="双版本补全",
                 text=("✅ " if ok else "⚠️ ") + text,
             )
