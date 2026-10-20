@@ -70,15 +70,37 @@ class _Logger:
         pass
 
 
+class _FakeRequestUtils:
+    def __init__(self, *a, **k):
+        pass
+
+    def get(self, *a, **k):
+        return None
+
+    def post(self, *a, **k):
+        return None
+
+
+class _FakeMediaChain:
+    def recognize_media(self, **kwargs):
+        return None
+
+
 _stub("app")
 _stub("app.chain")
 _stub("app.chain.download", DownloadChain=object)
 _stub("app.chain.search", SearchChain=object)
+_stub("app.chain.media", MediaChain=_FakeMediaChain)
 _stub("app.sdk")
 _stub("app.sdk.events", Event=object, eventmanager=_EventManager)
 _stub("app.sdk.logging", logger=_Logger())
+_stub("app.sdk.network", RequestUtils=_FakeRequestUtils)
 _stub("app.sdk.plugin", _PluginBase=_FakePluginBase)
+_stub("app.db")
+_stub("app.db.oper")
+_stub("app.db.oper.site", SiteOper=object)
 _stub("app.schemas")
+_stub("app.schemas.category", ClassificationPolicy=None)
 _stub(
     "app.schemas.types",
     EventType=types.SimpleNamespace(DownloadAdded="download.added"),
@@ -420,6 +442,20 @@ def _walk_btns(node, out):
     return out
 
 
+def _walk(node):
+    """把渲染树摊平成节点列表。"""
+    out = []
+    if isinstance(node, dict):
+        out.append(node)
+        for key in ("content",):
+            for child in node.get(key) or []:
+                out.extend(_walk(child))
+    elif isinstance(node, list):
+        for child in node:
+            out.extend(_walk(child))
+    return out
+
+
 page = man.get_page()
 page_html = "".join(str(item.get("html") or "") for card in page for item in (card.get("content") or [])) + \
     "".join(str(inner.get("html") or "") for card in page for item in (card.get("content") or [])
@@ -431,13 +467,13 @@ check("详情页有结果回显区 #dv-live", 'id="dv-live"' in page_html, True)
 check("详情页不再用 events（宿主点击后不刷新数据）", "events" not in str(page), True)
 form_schema, _defaults = man.get_form()
 form_btns = _walk_btns(form_schema, [])
-check("配置页按钮用 onClick（FormRender 不支持 events）", len(form_btns) >= 3, True)
-check(
-    "配置页按钮均带 onClick 脚本",
-    all("onClick" in (b.get("props") or {}) for b in form_btns),
-    True,
-)
-check("配置页按钮不再依赖 events", all("events" not in b for b in form_btns), True)
+check("配置页不再放操作按钮（按钮统一在详情页）", len(form_btns) == 0, True)
+_alerts = [n for n in _walk(form_schema) if n.get("component") == "VAlert"]
+_long = [a for a in _alerts if len(str(a.get("text") or "")) > 200]
+check("配置页不留长篇提示（>200字的 VAlert 已清空）", _long == [], True)
+check("配置页保留状态提示（一条短 VAlert）", 1 <= len(_alerts) <= 2, True)
+_hints = [n for n in _walk(form_schema) if "hint" in (n.get("props") or {})]
+check("必要填写指引（hint）仍保留", len(_hints) >= 3, True)
 
 # ---------------------------------------------------------------- 结果
 passed = sum(1 for _, ok in results if ok)

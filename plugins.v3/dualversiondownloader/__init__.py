@@ -8,15 +8,58 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.chain.download import DownloadChain
 from app.chain.search import SearchChain
-from app.sdk.events import Event, eventmanager
-from app.sdk.logging import logger
-from app.sdk.plugin import _PluginBase
-from app.schemas.types import EventType, MediaType, MessageType, SystemConfigKey
 
-try:  # 分类策略为 V3 内建能力，缺失时插件仍可降级运行
+# ---------------------------------------------------------------------------
+# 版本适配层：同一份代码同时支持 MoviePilot v3 与 v2
+#   v3：SDK 收在 app.sdk.*（plugin / logging / events / network）
+#   v2：沿用 app.plugins / app.log / app.core.event / app.utils.http
+# ---------------------------------------------------------------------------
+try:  # MoviePilot v3
+    from app.sdk.events import Event, eventmanager
+    from app.sdk.logging import logger
+    from app.sdk.network import RequestUtils
+    from app.sdk.plugin import _PluginBase
+    from app.schemas.types import EventType, MediaType, MessageType, SystemConfigKey
+
+    IS_V3 = True
+except ImportError:  # MoviePilot v2
+    from app.core.event import Event, eventmanager
+    from app.log import logger
+    from app.utils.http import RequestUtils
+    from app.plugins import _PluginBase
+    from app.schemas.types import EventType, MediaType, SystemConfigKey
+    from app.schemas.types import NotificationType as MessageType
+
+    IS_V3 = False
+
+try:  # 站点数据操作：v3 归类到 app.db.oper
+    from app.db.oper.site import SiteOper
+except ImportError:  # v2
+    from app.db.site_oper import SiteOper
+
+try:  # 分类策略为 v3 内建能力，v2 无此模块时降级运行
     from app.schemas.category import ClassificationPolicy
 except Exception:  # noqa: BLE001
     ClassificationPolicy = None  # type: ignore[assignment]
+
+
+def recognize_movie(tmdb_id: Any) -> Any:
+    """按 TMDB ID 识别电影：v3 用 media_source/media_id，v2 用 source/tmdbid。"""
+    tmdb_id = str(tmdb_id or "").strip()
+    if not tmdb_id:
+        return None
+    from app.chain.media import MediaChain
+
+    if IS_V3:
+        from app.schemas.types import MediaSource
+
+        return MediaChain().recognize_media(
+            mtype=MediaType.MOVIE, media_source=MediaSource.TMDB, media_id=tmdb_id
+        )
+    media_id = int(tmdb_id) if tmdb_id.isdigit() else tmdb_id
+    return MediaChain().recognize_media(
+        mtype=MediaType.MOVIE, source="themoviedb", tmdbid=media_id
+    )
 
 
 class DualVersionDownloader(_PluginBase):
@@ -31,11 +74,11 @@ class DualVersionDownloader(_PluginBase):
     # 插件名称
     plugin_name = "双版本补全"
     # 插件描述
-    plugin_desc = "电影订阅下载 4K 版本时，自动补一个 1080p 版本到同一目录；可按媒体库类别限定生效范围"
+    plugin_desc = "电影订阅下载 4K 版本时，自动补一个 1080p 版本到同一目录；媒体库缺 1080p 的老片可手动/定时补齐（兼容 MP v2 与 v3）"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.6.5"
+    plugin_version = "1.7.0"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -306,12 +349,7 @@ class DualVersionDownloader(_PluginBase):
         if not tmdb_id:
             return {"ok": False, "message": "缺少 tmdb_id"}
         try:
-            from app.chain.media import MediaChain
-            from app.schemas.types import MediaSource
-
-            mediainfo = MediaChain().recognize_media(
-                mtype=MediaType.MOVIE, media_source=MediaSource.TMDB, media_id=tmdb_id
-            )
+            mediainfo = recognize_movie(tmdb_id)
         except Exception as err:  # noqa: BLE001
             logger.error(f"双版本补全：试算识别失败：{err}")
             return {"ok": False, "message": f"识别失败：{err}"}
@@ -410,9 +448,9 @@ class DualVersionDownloader(_PluginBase):
                 f"｜更新于 {str(prog.get('updated_at') or '').replace('T', ' ')}"
             )
         elif last:
-            msg = self._last_scan_text(with_details=False) + "｜点「立即扫描一次」可再跑一轮"
+            msg = self._last_scan_text(with_details=False) + "｜点「手动补全一轮」可再跑一轮"
         else:
-            msg = "还没有扫描记录，点「立即扫描一次」开始"
+            msg = "还没有扫描记录，点「手动补全一轮（全部待补）」开始"
         return {"running": running, "progress": prog, "last": last, "message": msg}
 
     def _library_status_text(self) -> str:
@@ -425,18 +463,16 @@ class DualVersionDownloader(_PluginBase):
             return (
                 f"正在扫描：{cur}{tail}"
                 f"｜已补下 {prog.get('downloaded') or 0} 部"
-                f"｜未命中 {prog.get('missed') or 0}"
                 f"｜失败 {prog.get('failed') or 0}"
-                f"｜更新于 {str(prog.get('updated_at') or '').replace('T', ' ')}"
-                "（关掉再打开本页可刷新）"
             )
-        return self._last_scan_text()
+        # 配置页只留一行摘要，逐部明细在「查看数据」页看
+        return self._last_scan_text(with_details=False) + "｜明细见「查看数据」"
 
     def _last_scan_text(self, with_details: bool = True) -> str:
         """上次扫描结果的一句话摘要（页面/接口共用）。"""
         last = self.get_data("library_last") or {}
         if not last:
-            return "上次扫描：暂无记录，点「立即扫描一次」开始（首次扫描受站点流控影响可能要几分钟）。"
+            return "上次扫描：暂无记录，点「手动补全一轮」开始（首次可能较慢）"
         started = str(last.get("started_at") or "").replace("T", " ")
         err = last.get("error")
         base = (
@@ -500,8 +536,6 @@ class DualVersionDownloader(_PluginBase):
 
     def _site_options(self) -> List[dict]:
         try:
-            from app.db.oper.site import SiteOper
-
             sites = SiteOper().list_active()
         except Exception as err:  # noqa: BLE001
             logger.warn(f"双版本补全：读取站点列表失败：{err}")
@@ -554,8 +588,6 @@ class DualVersionDownloader(_PluginBase):
 
     def _http(self) -> Any:
         if self._http_client is None:
-            from app.sdk.network import RequestUtils
-
             self._http_client = RequestUtils(content_type="application/json")
         return self._http_client
 
@@ -891,12 +923,7 @@ class DualVersionDownloader(_PluginBase):
         if not tmdb_id:
             return "skip", f"{name}：无 TMDB 标识，跳过"
         try:
-            from app.chain.media import MediaChain
-            from app.schemas.types import MediaSource
-
-            mediainfo = MediaChain().recognize_media(
-                mtype=MediaType.MOVIE, media_source=MediaSource.TMDB, media_id=tmdb_id
-            )
+            mediainfo = recognize_movie(tmdb_id)
         except Exception as err:  # noqa: BLE001
             return "fail", f"{name}：识别失败（{err}）"
         if not mediainfo:
@@ -1090,6 +1117,43 @@ class DualVersionDownloader(_PluginBase):
             + '<div id="dv-live" style="margin-top:8px;font-size:14px;line-height:1.5;color:#eceff1">点上面的按钮，结果会显示在这里（扫描中会显示第几部/共几部）。</div>'
         )
 
+        def event_btn(label: str, path: str, color: str, icon: str,
+                      limit: Optional[int] = None) -> Dict[str, Any]:
+            """v2 用 events 点击：前端会带登录态请求，并在完成后自动刷新本页数据。"""
+            api = f"/plugin/DualVersionDownloader{path}"
+            if limit is not None:
+                api += f"?limit={int(limit)}"
+            return {
+                "component": "VBtn",
+                "props": {
+                    "color": color,
+                    "variant": "flat",
+                    "size": "small",
+                    "prependIcon": icon,
+                    "class": "mr-2 mb-2",
+                },
+                "text": label,
+                "events": {"click": {"api": api, "method": "GET"}},
+            }
+
+        if IS_V3:
+            action_nodes: List[Dict[str, Any]] = [{"component": "div", "html": buttons_html}]
+        else:
+            action_nodes = [{
+                "component": "VRow",
+                "props": {"class": "mt-2"},
+                "content": [{
+                    "component": "VCol",
+                    "props": {"cols": 12},
+                    "content": [
+                        event_btn("手动补全一轮（全部待补）", "/scan", "warning", "mdi-playlist-plus", 0),
+                        event_btn(f"按上限补一轮（{limit_desc}）", "/scan", "primary", "mdi-radar"),
+                        event_btn("查看扫描进度", "/scan_progress", "info", "mdi-progress-clock"),
+                        event_btn("清空冷却记录", "/reset_history", "grey", "mdi-broom"),
+                    ],
+                }],
+            }]
+
         return [
             {
                 "component": "VCard",
@@ -1141,10 +1205,7 @@ class DualVersionDownloader(_PluginBase):
                                     {"component": "div", "props": {"class": "text-body-2"}, "text": text},
                                 ],
                             },
-                            {
-                                "component": "div",
-                                "html": buttons_html,
-                            },
+                            *action_nodes,
                             {
                                 "component": "div",
                                 "props": {"class": "text-caption mt-3"},
@@ -1212,19 +1273,12 @@ class DualVersionDownloader(_PluginBase):
         last_text = self._library_status_text()
         _req = self._words(self._require_words)
         if len(_req) > 1:
-            last_text += (
-                f"｜⚠️「必须包含关键词」要求全部命中（当前 {'、'.join(_req)}），绝大多数标题不会同时出现，"
-                "建议改用「任选关键词」"
-            )
+            last_text += f"｜必须全部命中：{'、'.join(_req)}"
         return [
             {
                 "component": "VForm",
                 "content": [
-                    {
-                        "component": "VAlert",
-                        "props": {"type": "info", "variant": "flat", "density": "compact", "class": "mb-2"},
-                        "text": "① 上半部分 = 订阅下载监控：MoviePilot 下载 4K 电影时自动补下同片 1080p 到同一目录；下载的是 1080p 则不动。被动触发，无需手动操作。",
-                    },
+
                     {
                         "component": "VRow",
                         "content": [
@@ -1259,7 +1313,7 @@ class DualVersionDownloader(_PluginBase):
                                             "chips": True,
                                             "closableChips": True,
                                             "clearable": True,
-                                            "hint": "取自 MoviePilot 媒体分类，如 动画电影 / 华语电影 / 外语电影",
+                                            "hint": "MP 媒体分类，如 动画电影 / 华语电影 / 外语电影",
                                         },
                                     }
                                 ],
@@ -1308,7 +1362,7 @@ class DualVersionDownloader(_PluginBase):
                                             "chips": True,
                                             "closableChips": True,
                                             "clearable": True,
-                                            "hint": "来自 MoviePilot 已启用站点；站点越多全站搜索越慢",
+                                            "hint": "不选=全部已启用站点",
                                         },
                                     }
                                 ],
@@ -1369,35 +1423,8 @@ class DualVersionDownloader(_PluginBase):
                         ],
                     },
                     {"component": "VDivider", "props": {"class": "my-4"}},
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VAlert",
-                                        "props": {
-                                            "type": "warning",
-                                            "variant": "tonal",
-                                            "text": (
-                                                "媒体库补齐：扫描所选媒体库中「只有 4K、没有 1080p」的电影，"
-                                                "自动搜索并按上面的筛选规则补下 1080p 到电影下载目录，"
-                                                "再由 MoviePilot 整理进与 4K 相同的文件夹。"
-                                                "建议先开「仅预演不下载」跑一轮确认结果。"
-                                            ),
-                                        },
-                                    }
-                                ],
-                            }
-                        ],
-                    },
-                    {
-                        "component": "VAlert",
-                        "props": {"type": "warning", "variant": "flat", "density": "compact", "class": "mb-2"},
-                        "text": "② 下半部分 = 媒体库补齐：扫描所选媒体库中「只有 4K、没有 1080p」的老片，自动补下 1080p。先手动跑一轮补齐历史，之后交给定时扫描补漏网之鱼。按钮在下方，点击后会弹窗显示结果（MP v3 配置页本身不显示接口返回文字）。",
-                    },
+
+
                     {
                         "component": "VRow",
                         "content": [
@@ -1444,7 +1471,7 @@ class DualVersionDownloader(_PluginBase):
                                             "chips": True,
                                             "closableChips": True,
                                             "clearable": True,
-                                            "hint": "列表来自 Emby/Jellyfin 的电影库，如 动画电影 / 华语电影 / 外语电影",
+                                            "hint": "Emby/Jellyfin 电影库",
                                         },
                                     }
                                 ],
@@ -1475,66 +1502,15 @@ class DualVersionDownloader(_PluginBase):
                             self._col_text("library_downloader", "指定下载器(留空=默认)", "", md=4),
                             {
                                 "component": "VCol",
-                                "props": {"cols": 12, "md": 8},
+                                "props": {"cols": 12, "md": 8, "class": "d-flex align-center"},
                                 "content": [
                                     {
-                                        "component": "VBtn",
-                                        "props": {
-                                            "variant": "tonal",
-                                            "color": "primary",
-                                            "prepend-icon": "mdi-radar",
-                                            "class": "mt-2 mr-2",
-                                            "onClick": self._click_script("/plugin/DualVersionDownloader/scan"),
-                                        },
-                                        "text": "按上限补一轮",
-                                    },
-                                    {
-                                        "component": "VBtn",
-                                        "props": {
-                                            "variant": "flat",
-                                            "color": "warning",
-                                            "prepend-icon": "mdi-playlist-plus",
-                                            "class": "mt-2 mr-2",
-                                            "onClick": self._click_script("/plugin/DualVersionDownloader/scan", 0),
-                                        },
-                                        "text": "手动补全一轮（全部待补）",
-                                    },
-                                    {
-                                        "component": "VBtn",
-                                        "props": {
-                                            "variant": "tonal",
-                                            "color": "info",
-                                            "prepend-icon": "mdi-progress-clock",
-                                            "class": "mt-2",
-                                            "onClick": self._click_script("/plugin/DualVersionDownloader/scan_progress"),
-                                        },
-                                        "text": "查看扫描进度",
-                                    },
-                                ],
-                            },
-                        ],
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
-                            {
-                                "component": "VCol",
-                                "props": {"cols": 12},
-                                "content": [
-                                    {
-                                        "component": "VAlert",
-                                        "props": {
-                                            "type": "info",
-                                            "variant": "tonal",
-                                            "text": (
-                                                "仅处理电影：下载 4K 版本时才会触发，补下的资源保存到与 4K 任务"
-                                                "相同的目录，整理时按命名规则自动区分版本；下载 1080p 不做任何处理。"
-                                                "类别不选表示全部电影都处理。"
-                                            ),
-                                        },
+                                        "component": "div",
+                                        "props": {"class": "text-caption"},
+                                        "text": "操作按钮在插件右上角菜单「查看数据」页。",
                                     }
                                 ],
-                            }
+                            },
                         ],
                     },
                 ],
@@ -1656,7 +1632,8 @@ class DualVersionDownloader(_PluginBase):
             if datetime.now() - self._policy_cache_at < timedelta(minutes=self._POLICY_TTL_MINUTES):
                 return self._policy_cache
         try:
-            raw = self.systemconfig.get(SystemConfigKey.MediaClassificationPolicy)
+            policy_key = getattr(SystemConfigKey, "MediaClassificationPolicy", None)
+            raw = self.systemconfig.get(policy_key) if policy_key else None
         except Exception as err:  # noqa: BLE001
             logger.debug(f"双版本补全：读取分类策略失败：{err}")
             return self._policy_cache

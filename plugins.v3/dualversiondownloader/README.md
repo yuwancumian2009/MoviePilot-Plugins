@@ -1,5 +1,8 @@
 # 双版本补全 (DualVersionDownloader)
 
+> 同一份代码同时适配 MoviePilot **v3** 与 **v2**（导入层自动探测）。操作按钮统一在插件卡片右上角菜单「查看数据」页：
+> v3 的配置页渲染器不支持 events 且详情页点击后不刷新数据，所以 v3 用页内原生按钮 + 结果回显区 `#dv-live`；v2 用 events 点击，前端完成后自动刷新页面。
+
 电影订阅下载到 **4K** 版本时，自动按同一媒体身份（TMDB 等）再搜索一个 **1080p** 版本，
 并下载到与 4K 任务**相同的目录**；下载的是 1080p 时不做任何处理。
 
@@ -55,7 +58,7 @@
 4. 用同一套筛选规则搜索 1080p，下载到「1080p 下载目录」（留空则自动取目录设置里电影下载目录）；
 5. MoviePilot 下载完成后自动整理，1080p 会落进与 4K **相同的电影文件夹**（按 TMDB 目录归并）。
 
-触发方式：配置页「立即扫描一次」按钮，或填 cron（默认 `0 4 * * *` 每天 4 点）。建议先开「仅预演不下载」跑一轮看命中情况。
+触发方式：「查看数据」页的「手动补全一轮（全部待补）」（忽略每轮上限，补历史欠账）/「按上限补一轮」，或填 cron（默认 `0 4 * * *` 每天 4 点）。建议先开「仅预演不下载」跑一轮看命中情况。
 
 | 配置 | 说明 |
 | --- | --- |
@@ -75,6 +78,12 @@
 - **仅电影**：v1.3.0 起移除剧集支持，电视剧/动漫下载不会被处理；
 - 类别判定复用 MoviePilot 自身的媒体分类策略（分类求值），与整理后的媒体库类别一致；
 - 若用 115/夸克 等 strm 媒体库，1080p 入库后需靠 strm 生成插件（如 P115StrmHelper）补出 `.strm`，Emby 才会看到第二个版本；其默认每 12 小时全量同步一次，也可用它的 `api_strm_sync_create_by_path` 立即生成。
+
+## v1.7.0：双版本适配 + 配置页精简
+
+- 同一份 `__init__.py` 同时适配 v3 / v2：导入层按 `app.sdk.*` 是否存在自动选路，识别接口在 v2 走 `recognize_media(source, tmdbid)`、v3 走 `media_source/media_id`；
+- 配置页只留必要填写指引（去掉 6 段说明性 VAlert 与操作按钮），状态只保留一行摘要，逐部明细看「查看数据」页；
+- v2 适配要点：`app.plugins._PluginBase` / `app.log` / `app.core.event` / `app.utils.http` / `app.db.site_oper`，详情页按钮走 events（v2 前端点击后会重新拉取页面数据）。
 
 ## 实测记录（2026-10-20）
 
@@ -132,7 +141,7 @@ v1.5.0 因此把反馈改成三条真实可见的通道：
 | `POST /api/v1/plugin/DualVersionDownloader/probe`，body `{"tmdb_id":"872585"}` | 试算某部电影命中的类别及是否在当前生效范围内，不产生下载 |
 | `GET /api/v1/plugin/DualVersionDownloader/sites` | 站点下拉选项（id + 名称） |
 | `GET /api/v1/plugin/DualVersionDownloader/libraries` | Emby/Jellyfin 电影库清单 |
-| `GET /api/v1/plugin/DualVersionDownloader/scan` | 立即执行一次媒体库补齐扫描（后台线程） |
+| `GET /api/v1/plugin/DualVersionDownloader/scan` | 立即执行一次媒体库补齐扫描（后台线程）；`?limit=0` = 全部待补 |
 | `GET /api/v1/plugin/DualVersionDownloader/scan_progress` | 当前扫描进度（第几部/共几部、正在搜索哪部、已补下数量），`message` 字段可直接读 |
 | `GET /api/v1/plugin/DualVersionDownloader/scan_status` | 扫描状态与上次结果 |
 | `GET /api/v1/plugin/DualVersionDownloader/reset_history` | 清空补齐冷却记录（让已跳过的影片重新参与） |
