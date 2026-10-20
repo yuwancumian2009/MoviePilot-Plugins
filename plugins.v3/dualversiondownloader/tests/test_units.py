@@ -200,6 +200,15 @@ check("未选类别全部通过", _plugin(enabled=True)._category_pass(object())
 check("类别展示名", cat_plugin._category_label(["legacy.movie.aaa"]), "动画电影")
 check("未选类别展示", cat_plugin._category_label([]), "全部电影")
 
+# ---------------------------------------------------------------- 分类策略载荷兼容
+state_payload = {"active": {"categories": [{"id": "legacy.movie.a", "name": "动画电影"}],
+                            "rules": []}, "history": [{"revision": 1}]}
+check("策略载荷解包 active", DualVersionDownloader._unwrap_policy_payload(state_payload),
+      {"categories": [{"id": "legacy.movie.a", "name": "动画电影"}], "rules": []})
+check("策略载荷直接本体", DualVersionDownloader._unwrap_policy_payload({"categories": []}), {"categories": []})
+check("策略载荷字符串", DualVersionDownloader._unwrap_policy_payload('{"categories": []}'), {"categories": []})
+check("策略载荷空值", DualVersionDownloader._unwrap_policy_payload(None), None)
+
 # ---------------------------------------------------------------- 仅电影 / 表单
 form, defaults = _plugin(enabled=True).get_form()
 check("默认配置无剧集字段", sorted(k for k in defaults if "tv" in k or "episode" in k), [])

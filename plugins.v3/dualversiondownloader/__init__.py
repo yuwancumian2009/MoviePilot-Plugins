@@ -1,3 +1,4 @@
+import json
 import re
 import threading
 from datetime import datetime, timedelta
@@ -397,6 +398,23 @@ class DualVersionDownloader(_PluginBase):
     # 媒体类别：读取分类策略 / 选项 / 判定
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _unwrap_policy_payload(raw: Any) -> Any:
+        """兼容三种存法：分类策略本体 / ClassificationPolicyState（active） / 字符串。"""
+        if isinstance(raw, str) and raw.strip():
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                return None
+        if isinstance(raw, dict):
+            for key in ("active", "policy"):
+                inner = raw.get(key)
+                if isinstance(inner, dict) and inner.get("categories") is not None:
+                    return inner
+            if raw.get("categories") is not None:
+                return raw
+        return raw if not isinstance(raw, dict) else None
+
     def _load_policy(self) -> Optional[Any]:
         """读取 MoviePilot 当前的媒体分类策略（带短时缓存）。"""
         if ClassificationPolicy is None:
@@ -409,14 +427,13 @@ class DualVersionDownloader(_PluginBase):
         except Exception as err:  # noqa: BLE001
             logger.debug(f"双版本补全：读取分类策略失败：{err}")
             return self._policy_cache
+        payload = self._unwrap_policy_payload(raw)
         policy = None
         try:
-            if isinstance(raw, ClassificationPolicy):
-                policy = raw
-            elif isinstance(raw, dict):
-                policy = ClassificationPolicy(**raw)
-            elif isinstance(raw, str) and raw.strip():
-                policy = ClassificationPolicy.model_validate_json(raw)
+            if isinstance(payload, ClassificationPolicy):
+                policy = payload
+            elif isinstance(payload, dict):
+                policy = ClassificationPolicy(**payload)
         except Exception as err:  # noqa: BLE001
             logger.debug(f"双版本补全：解析分类策略失败：{err}")
             return self._policy_cache
