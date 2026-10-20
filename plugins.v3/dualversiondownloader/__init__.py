@@ -71,7 +71,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.2.4"
+    plugin_version = "1.2.5"
     version = "1.2.4"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -815,12 +815,34 @@ class DualVersionDownloader(_PluginBase):
             picked.append(item)
 
         if self._prefer == "size":
-            picked.sort(key=lambda c: (getattr(c.torrent_info, "size", 0) or 0,
+            picked.sort(key=lambda c: (self._episode_specificity(c, targets),
+                                       getattr(c.torrent_info, "size", 0) or 0,
                                        -(getattr(c.torrent_info, "seeders", 0) or 0)))
         else:
-            picked.sort(key=lambda c: (-(getattr(c.torrent_info, "seeders", 0) or 0),
+            picked.sort(key=lambda c: (self._episode_specificity(c, targets),
+                                       -(getattr(c.torrent_info, "seeders", 0) or 0),
                                        getattr(c.torrent_info, "size", 0) or 0))
         return picked
+
+    @staticmethod
+    def _episode_specificity(item: Any, targets: Optional[Set[int]] = None) -> int:
+        """候选对目标集的"精确程度"：0=元数据明确列出集号，1=标题写明目标集号，2=无集信息（可能是整季包）。
+
+        排序时优先精确命中，避免单集需求被做种数更高的整季包顶掉。
+        """
+        if not targets:
+            return 0
+        meta = getattr(item, "meta_info", None)
+        if getattr(meta, "episode_list", None):
+            return 0
+        torrent = getattr(item, "torrent_info", None)
+        text = " ".join(str(x) for x in (
+            getattr(torrent, "title", "") or "",
+            getattr(meta, "org_string", "") or "",
+        ) if x)
+        found = {int(m) for m in re.findall(r"(?i)(?<![a-z0-9])s\d{1,2}e(\d{1,3})(?:v\d)?(?![0-9])", text)}
+        found |= {int(m) for m in re.findall(r"(?i)(?<![a-z0-9])e(\d{1,3})(?:v\d)?(?![0-9])", text)}
+        return 1 if found & targets else 2
 
     @staticmethod
     def _season_of_item(item: Any) -> Optional[int]:
