@@ -26,7 +26,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -40,7 +40,7 @@ class DualVersionDownloader(_PluginBase):
 
     # 4K / 1080p 判定
     _RE_4K = re.compile(r"(?i)(\b4k\b|2160[pi]|x2160|\buhd\b)")
-    _RE_1080 = re.compile(r"(?i)(1080[pi]|x1080)")
+    _RE_1080 = re.compile(r"(?i)(1080p|x1080)")
 
     def __init__(self) -> None:
         super().__init__()
@@ -505,7 +505,10 @@ class DualVersionDownloader(_PluginBase):
 
         contexts = SearchChain().process(mediainfo=mediainfo, sites=sites) or []
         logger.info(f"双版本补全：搜索到 {len(contexts)} 个候选资源")
+        return self._filter_candidates(contexts)
 
+    def _filter_candidates(self, contexts: List[Any]) -> List[Any]:
+        """从搜索结果里挑出目标分辨率的候选并排序（纯函数，便于自测）。"""
         excludes = [w.strip().lower() for w in re.split(r"[,\s]+", self._exclude_words) if w.strip()]
         picked: List[Any] = []
         for item in contexts:
