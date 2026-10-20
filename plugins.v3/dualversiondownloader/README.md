@@ -46,3 +46,10 @@
 - 4K + 1080p 双份会占双倍空间，按需用「最大体积」控制 1080p 一份的大小；
 - **仅电影**：v1.3.0 起移除剧集支持，电视剧/动漫下载不会被处理；
 - 类别判定复用 MoviePilot 自身的媒体分类策略（分类求值），与整理后的媒体库类别一致。
+
+## 自检接口
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/v1/plugin/DualVersionDownloader/categories?refresh=true` | 列出可选电影类别（含分类 ID） |
+| `POST /api/v1/plugin/DualVersionDownloader/probe`，body `{"tmdb_id":"872585"}` | 试算某部电影命中的类别及是否在当前生效范围内，不产生下载 |
