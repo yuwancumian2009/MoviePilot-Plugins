@@ -35,7 +35,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.5.1"
+    plugin_version = "1.6.4"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -103,6 +103,7 @@ class DualVersionDownloader(_PluginBase):
         self._library_cooldown_days: int = 30
         self._library_history: Dict[str, str] = {}
         self._scan_running: bool = False
+        self._scan_limit_override: Optional[int] = None
         self._last_filter_stats: Dict[str, Any] = {}
         self._relaxed_used: bool = False
         self._strict_reason: str = ""
@@ -232,6 +233,7 @@ class DualVersionDownloader(_PluginBase):
                 "path": "/categories",
                 "endpoint": self.api_categories,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "获取媒体库类别列表",
                 "description": "读取 MoviePilot 分类策略中启用的电影类别（如动画电影/华语电影/外语电影）",
             },
@@ -239,6 +241,7 @@ class DualVersionDownloader(_PluginBase):
                 "path": "/probe",
                 "endpoint": self.api_probe,
                 "methods": ["POST"],
+                "auth": "bear",
                 "summary": "试算一部电影的类别",
                 "description": "传 tmdb_id，返回该片命中的媒体类别及是否在当前生效范围内（不下载）",
             },
@@ -246,6 +249,7 @@ class DualVersionDownloader(_PluginBase):
                 "path": "/sites",
                 "endpoint": self.api_sites,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "获取站点下拉选项",
                 "description": "返回 MoviePilot 已启用站点（id + 名称），供配置页多选使用",
             },
@@ -253,6 +257,7 @@ class DualVersionDownloader(_PluginBase):
                 "path": "/libraries",
                 "endpoint": self.api_libraries,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "获取媒体库下拉选项",
                 "description": "返回 Emby/Jellyfin 中的电影类媒体库名称，供媒体库补齐配置使用",
             },
@@ -260,6 +265,7 @@ class DualVersionDownloader(_PluginBase):
                 "path": "/scan",
                 "endpoint": self.api_scan,
                 "methods": ["GET", "POST"],
+                "auth": "bear",
                 "summary": "立即执行媒体库补齐扫描",
                 "description": "扫描所选媒体库中只有 4K 没有 1080p 的电影并补下 1080p（后台执行）",
             },
@@ -267,6 +273,7 @@ class DualVersionDownloader(_PluginBase):
                 "path": "/scan_status",
                 "endpoint": self.api_scan_status,
                 "methods": ["GET"],
+                "auth": "bear",
                 "summary": "查询扫描状态",
                 "description": "返回是否运行中、上次扫描结果",
             },
@@ -274,6 +281,7 @@ class DualVersionDownloader(_PluginBase):
                 "path": "/scan_progress",
                 "endpoint": self.api_scan_progress,
                 "methods": ["GET", "POST"],
+                "auth": "bear",
                 "summary": "查询当前扫描进度",
                 "description": "返回是否运行中、本轮第几部/共几部、当前正在搜索的影片与已补下数量",
             },
@@ -281,6 +289,7 @@ class DualVersionDownloader(_PluginBase):
                 "path": "/reset_history",
                 "endpoint": self.api_reset_history,
                 "methods": ["GET", "POST"],
+                "auth": "bear",
                 "summary": "清空补齐重试记录",
                 "description": "清空媒体库补齐的冷却记录，让已跳过的影片重新参与扫描",
             },
@@ -335,8 +344,8 @@ class DualVersionDownloader(_PluginBase):
         items = self._library_options()
         return {"items": items, "count": len(items), "selected": self._library_names}
 
-    def api_scan(self) -> Dict[str, Any]:
-        """立即触发一次媒体库补齐扫描（后台线程）。"""
+    def api_scan(self, limit: Optional[int] = None) -> Dict[str, Any]:
+        """立即触发一次媒体库补齐扫描（后台线程）。limit=0 表示本轮不限数量。"""
         if not self._library_names:
             return {"started": False, "running": self._scan_is_running(), "message": "未选择要扫描的媒体库"}
         if not self._library_enabled:
@@ -360,13 +369,13 @@ class DualVersionDownloader(_PluginBase):
                 "running": True,
                 "message": f"扫描已在运行中：{where}，完成或失败后会写入扫描记录",
             }
-        started = self._start_scan()
+        started = self._start_scan(limit)
         libs = "、".join(self._library_names)
         return {
             "started": started,
             "running": True,
             "message": (
-                f"已开始扫描 {libs}（最多 {self._library_limit} 部）。"
+                f"已开始扫描 {libs}（{self._scan_limit_desc()}）。"
                 "站点有流控，单部可能要等 1~3 分钟；点「查看扫描进度」可看当前进度，完成后会通知。"
                 if started
                 else "启动失败，请稍后再试"
@@ -627,17 +636,23 @@ class DualVersionDownloader(_PluginBase):
     # 媒体库补齐：扫描 + 补下
     # ------------------------------------------------------------------
 
-    def _start_scan(self) -> bool:
+    def _scan_limit_desc(self) -> str:
+        """本轮处理上限的人话说明。"""
+        limit = self._library_limit if self._scan_limit_override is None else int(self._scan_limit_override)
+        return "全部待补" if limit <= 0 else f"最多 {limit} 部"
+
+    def _start_scan(self, limit: Optional[int] = None) -> bool:
         with self._scan_lock:
             if self._scan_is_running():
                 return False
             self._scan_running = True
+            self._scan_limit_override = limit
             self._touch_scan_lock()
         if self._notify_enabled:
             try:
                 self._notify(
                     f"媒体库补齐开始：{self._library_label() or '未选库'}"
-                    f"（每次最多 {self._library_limit} 部）。受站点流控影响单部约 1~3 分钟，完成后会再通知。"
+                    f"（{self._scan_limit_desc()}）。受站点流控影响单部约 1~3 分钟，完成后会再通知。"
                 )
             except Exception as err:  # noqa: BLE001
                 logger.debug(f"双版本补全：发送开始通知失败：{err}")
@@ -767,7 +782,8 @@ class DualVersionDownloader(_PluginBase):
         }
         details: List[str] = summary["details"]
         try:
-            logger.info(f"双版本补全：开始扫描媒体库 {self._library_label()}（每次最多 {self._library_limit} 部）")
+            limit = self._library_limit if self._scan_limit_override is None else int(self._scan_limit_override)
+            logger.info(f"双版本补全：开始扫描媒体库 {self._library_label()}（{self._scan_limit_desc()}）")
             groups = self._collect_library_movies()
             summary["scanned"] = len(groups)
             pending = [
@@ -778,12 +794,11 @@ class DualVersionDownloader(_PluginBase):
             ]
             summary["pending"] = len(pending)
             pending.sort(key=lambda g: (-int(g.get("year") or 0), str(g.get("title") or "")))
+            plan = pending if limit <= 0 else pending[:limit]
             logger.info(
                 f"双版本补全：库内 {len(groups)} 部，只有 4K 无 1080p 的 {len(pending)} 部，"
-                f"本轮处理 {min(len(pending), self._library_limit)} 部"
+                f"本轮处理 {len(plan)} 部（{self._scan_limit_desc()}）"
             )
-
-            plan = pending[: max(0, self._library_limit)]
             total = len(plan)
             self._update_scan_progress(
                 started_at=started_at,
@@ -977,6 +992,218 @@ class DualVersionDownloader(_PluginBase):
     # 配置与页面
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _click_script(path: str, limit: Optional[int] = None) -> str:
+        """拼一段 JS：带登录态直接调插件接口，并把返回结果弹窗显示。
+
+        MP v3 的配置页由 FormRender 渲染，它**不支持 events**（点击不发任何请求），
+        只支持 props 里以源码字符串形式给出的 onClick，所以配置页按钮走这条路。
+        """
+        query = f"?limit={int(limit)}" if limit is not None else ""
+        return (
+            "function(){"
+            "var tok='';"
+            "try{tok=(JSON.parse(localStorage.getItem('auth')||'{}')||{}).token||''}catch(e){}"
+            "if(!tok){var ks=Object.keys(localStorage);for(var i=0;i<ks.length;i++){"
+            "try{var v=JSON.parse(localStorage.getItem(ks[i])||'null');if(v&&v.token){tok=v.token;break}}catch(e2){}}}"
+            "fetch('/api/v1" + path + query + "',{headers:{'Authorization':'Bearer '+tok}})"
+            ".then(function(r){return r.text().then(function(t){var m='';try{var d=JSON.parse(t);"
+            "m=(d&&d.message)||(d&&d.data&&d.data.message)||''}catch(e3){m=t}"
+            "if(!m){m=r.ok?'请求已发送（HTTP '+r.status+'）':'HTTP '+r.status}alert(m)})})"
+            ".catch(function(e4){alert('请求失败：'+e4)})"
+            "}"
+        )
+
+    # ------------------------------------------------------------------
+    # 插件详情页（仪表板）：状态 + 可用的操作按钮
+    # ------------------------------------------------------------------
+
+    def _page_status(self) -> Tuple[str, str, str]:
+        """返回 (color, title, text)，供详情页顶部状态卡使用。"""
+        running = self._scan_is_running()
+        last = self.get_data("library_last") or {}
+        if running:
+            return "info", "媒体库补齐：正在运行", self._library_status_text()
+        if last:
+            return "success", "媒体库补齐：空闲（上次已结束）", self._last_scan_text()
+        return "grey", "媒体库补齐：尚未运行过", "点下方「手动补全一轮（全部待补）」把历史遗留的 4K-only 影片一次性补齐；之后交给定时扫描补漏网之鱼。"
+
+    def _page_section_one_text(self) -> str:
+        """详情页第一块（订阅下载监控）的状态摘要。"""
+        cats = self._category_label(self._categories) or "全部电影"
+        words = []
+        if self._require_words:
+            words.append(f"必须含 {self._require_words}")
+        if self._any_words:
+            words.append(f"任选 {self._any_words}")
+        return (
+            f"状态：{'已启用' if self._enabled else '已关闭'}"
+            f"｜生效类别：{cats}"
+            f"｜补下分辨率：{self._target_pix}"
+            f"｜冷却：{self._cooldown_days} 天"
+            f"｜{'预演（不下载）' if self._dry_run else '实际下载'}"
+            + (f"｜筛选：{'；'.join(words)}" if words else "")
+        )
+
+    def get_page(self) -> Optional[List[Dict[str, Any]]]:
+        """插件详情页：实时状态 + 真正可点的按钮。
+
+        MP v3 中配置页由 FormRender 渲染，它**不处理 events**（点了不发请求、也没有任何日志）；
+        详情页由 PageRender 渲染，支持 events.click.api，并且动作完成后会自动重新加载本页数据，
+        所以「手动补全 / 查看进度」这类操作按钮放在这里才真正可用。
+        """
+        color, title, text = self._page_status()
+        last = self.get_data("library_last") or {}
+        details = [str(x) for x in (last.get("details") or [])][:8]
+        limit_desc = f"最多 {self._library_limit} 部" if self._library_limit > 0 else "不限数量"
+
+        # 操作按钮用原生 HTML（v-html 渲染）而不是 VBtn：
+        # PageRender 的 events 点击后宿主不会重新拉取页面数据、props.onClick 字符串它又不认，
+        # 用原生 onclick 直接 fetch，并把服务端返回的进度写回 #dv-live，点了必有可见反馈。
+        def js_btn(label: str, path: str, bg: str, fg: str, limit: Optional[int] = None) -> str:
+            url = f"/api/v1{path}" + (f"?limit={int(limit)}" if limit is not None else "")
+            body = (
+                "var el=document.getElementById('dv-live');"
+                "var tok='';"
+                "try{tok=(JSON.parse(localStorage.getItem('auth')||'{}')||{}).token||''}catch(e){}"
+                "if(el){el.textContent='请求中…'}"
+                "fetch('" + url + "',{headers:{'Authorization':'Bearer '+tok}})"
+                ".then(function(r){return r.text().then(function(t){var m=t;"
+                "try{var d=JSON.parse(t);m=(d&&d.message)||(d&&d.data&&d.data.message)||''}catch(e2){}"
+                "if(!m){m=r.ok?'请求已发送（HTTP '+r.status+'）':'HTTP '+r.status}"
+                "if(el){el.textContent=m}else{alert(m)}})}).catch(function(e3){"
+                "if(el){el.textContent='请求失败：'+e3}else{alert('请求失败：'+e3)}})"
+            )
+            style = (
+                f"background:{bg};color:{fg};border:0;border-radius:6px;padding:8px 14px;"
+                "font-size:14px;cursor:pointer;margin:0 8px 8px 0;line-height:1.2"
+            )
+            return f'<button type="button" style="{style}" onclick="{body}">{label}</button>'
+
+        buttons_html = (
+            '<div style="display:flex;flex-wrap:wrap;margin-top:12px">'
+            + js_btn("手动补全一轮（全部待补）", "/plugin/DualVersionDownloader/scan", "#fb8c00", "#fff", 0)
+            + js_btn(f"按上限补一轮（{limit_desc}）", "/plugin/DualVersionDownloader/scan", "#1976d2", "#fff")
+            + js_btn("查看扫描进度（刷新状态）", "/plugin/DualVersionDownloader/scan_progress", "#0288d1", "#fff")
+            + js_btn("清空冷却记录", "/plugin/DualVersionDownloader/reset_history", "#546e7a", "#fff")
+            + "</div>"
+            + '<div id="dv-live" style="margin-top:6px;font-size:13px;color:#90a4ae">点上面的按钮，结果会显示在这里（扫描中会显示第几部/共几部）。</div>'
+        )
+
+        return [
+            {
+                "component": "VCard",
+                "props": {"variant": "tonal", "class": "mb-3"},
+                "content": [
+                    {
+                        "component": "VCardTitle",
+                        "props": {"class": "text-subtitle-1"},
+                        "text": "① 订阅下载监控：4K 下载时自动追加 1080p",
+                    },
+                    {
+                        "component": "VCardText",
+                        "content": [
+                            {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": "success" if self._enabled else "warning",
+                                    "variant": "tonal",
+                                    "density": "compact",
+                                },
+                                "text": self._page_section_one_text(),
+                            },
+                            {
+                                "component": "div",
+                                "props": {"class": "text-caption mt-2"},
+                                "text": "被动触发：MoviePilot 下载 4K 电影时自动补下同片 1080p 到同一目录；下载的是 1080p 则不动。此块无需手动操作。",
+                            },
+                        ],
+                    },
+                ],
+            },
+            {
+                "component": "VCard",
+                "props": {"variant": "tonal", "class": "mb-3"},
+                "content": [
+                    {
+                        "component": "VCardTitle",
+                        "props": {"class": "text-subtitle-1"},
+                        "text": "② 媒体库补齐：把缺 1080p 的老片补上",
+                    },
+                    {
+                        "component": "VCardText",
+                        "content": [
+                            {
+                                "component": "VAlert",
+                                "props": {"type": color, "variant": "tonal", "density": "compact"},
+                                "content": [
+                                    {"component": "div", "props": {"class": "text-subtitle-2"}, "text": title},
+                                    {"component": "div", "props": {"class": "text-body-2"}, "text": text},
+                                ],
+                            },
+                            {
+                                "component": "div",
+                                "html": buttons_html,
+                            },
+                            {
+                                "component": "div",
+                                "props": {"class": "text-caption mt-3"},
+                                "text": f"扫描的库：{'、'.join(self._library_names) or '未选择'}｜定时扫描：{self._library_cron or '未启用（仅手动）'}｜同一影片冷却 {self._library_cooldown_days} 天｜点按钮会弹「正在处理」并在完成后自动刷新本页状态；扫描开始与结束另发通知，可在插件菜单「查看日志」看逐部日志。",
+                            },
+                        ],
+                    },
+                ],
+            },
+            {
+                "component": "VCard",
+                "props": {"variant": "outlined"},
+                "content": [
+                    {
+                        "component": "VCardTitle",
+                        "props": {"class": "text-subtitle-2"},
+                        "text": "最近一轮明细",
+                    },
+                    {
+                        "component": "VCardText",
+                        "props": {"class": "text-body-2"},
+                        "content": (
+                            [{"component": "div", "text": line} for line in details]
+                            if details
+                            else [{"component": "div", "props": {"class": "text-medium-emphasis"}, "text": "暂无记录"}]
+                        ),
+                    },
+                ],
+            },
+            {
+                "component": "VCard",
+                "props": {"variant": "outlined"},
+                "content": [
+                    {
+                        "component": "VCardTitle",
+                        "props": {"class": "text-subtitle-2"},
+                        "text": f"最近自动补全记录（{len(self._history or {})} 部）",
+                    },
+                    {
+                        "component": "VCardText",
+                        "props": {"class": "text-body-2"},
+                        "content": (
+                            [
+                                {"component": "div", "text": line}
+                                for line in [
+                                    f"{str(ts)[:19].replace('T', ' ')}  {key}"
+                                    for key, ts in sorted(
+                                        (self._history or {}).items(), key=lambda kv: kv[1], reverse=True
+                                    )[:10]
+                                ]
+                            ]
+                            if self._history
+                            else [{"component": "div", "props": {"class": "text-medium-emphasis"}, "text": "暂无记录"}]
+                        ),
+                    },
+                ],
+            },
+        ]
+
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         category_items = self._category_select_items()
         site_items = self._site_options()
@@ -993,6 +1220,11 @@ class DualVersionDownloader(_PluginBase):
             {
                 "component": "VForm",
                 "content": [
+                    {
+                        "component": "VAlert",
+                        "props": {"type": "info", "variant": "flat", "density": "compact", "class": "mb-2"},
+                        "text": "① 上半部分 = 订阅下载监控：MoviePilot 下载 4K 电影时自动补下同片 1080p 到同一目录；下载的是 1080p 则不动。被动触发，无需手动操作。",
+                    },
                     {
                         "component": "VRow",
                         "content": [
@@ -1162,6 +1394,11 @@ class DualVersionDownloader(_PluginBase):
                         ],
                     },
                     {
+                        "component": "VAlert",
+                        "props": {"type": "warning", "variant": "flat", "density": "compact", "class": "mb-2"},
+                        "text": "② 下半部分 = 媒体库补齐：扫描所选媒体库中「只有 4K、没有 1080p」的老片，自动补下 1080p。先手动跑一轮补齐历史，之后交给定时扫描补漏网之鱼。按钮在下方，点击后会弹窗显示结果（MP v3 配置页本身不显示接口返回文字）。",
+                    },
+                    {
                         "component": "VRow",
                         "content": [
                             {
@@ -1247,14 +1484,20 @@ class DualVersionDownloader(_PluginBase):
                                             "color": "primary",
                                             "prepend-icon": "mdi-radar",
                                             "class": "mt-2 mr-2",
+                                            "onClick": self._click_script("/plugin/DualVersionDownloader/scan"),
                                         },
-                                        "text": "立即扫描一次",
-                                        "events": {
-                                            "click": {
-                                                "api": "/plugin/DualVersionDownloader/scan",
-                                                "method": "GET",
-                                            }
+                                        "text": "按上限补一轮",
+                                    },
+                                    {
+                                        "component": "VBtn",
+                                        "props": {
+                                            "variant": "flat",
+                                            "color": "warning",
+                                            "prepend-icon": "mdi-playlist-plus",
+                                            "class": "mt-2 mr-2",
+                                            "onClick": self._click_script("/plugin/DualVersionDownloader/scan", 0),
                                         },
+                                        "text": "手动补全一轮（全部待补）",
                                     },
                                     {
                                         "component": "VBtn",
@@ -1263,15 +1506,10 @@ class DualVersionDownloader(_PluginBase):
                                             "color": "info",
                                             "prepend-icon": "mdi-progress-clock",
                                             "class": "mt-2",
+                                            "onClick": self._click_script("/plugin/DualVersionDownloader/scan_progress"),
                                         },
                                         "text": "查看扫描进度",
-                                        "events": {
-                                            "click": {
-                                                "api": "/plugin/DualVersionDownloader/scan_progress",
-                                                "method": "GET",
-                                            }
-                                        },
-                                    }
+                                    },
                                 ],
                             },
                         ],
@@ -1328,134 +1566,6 @@ class DualVersionDownloader(_PluginBase):
             "library_limit": 3,
             "library_cooldown_days": 30,
         }
-
-    def get_page(self) -> List[dict]:
-        records = sorted(
-            (self._history or {}).items(), key=lambda kv: kv[1], reverse=True
-        )[:20]
-        lines = [f"{ts[:19].replace('T', ' ')}  {key}" for key, ts in records]
-
-        last_scan = self.get_data("library_last") or {}
-        scan_lines: List[str] = []
-        if isinstance(last_scan, dict) and last_scan:
-            scan_lines.append(
-                f"{str(last_scan.get('started_at') or '')[:19].replace('T', ' ')} 扫描 "
-                f"{last_scan.get('scanned', 0)} 部｜待补 {last_scan.get('pending', 0)}｜"
-                f"补下 {last_scan.get('downloaded', 0)}｜未命中 {last_scan.get('missed', 0)}｜"
-                f"失败 {last_scan.get('failed', 0)}"
-            )
-            for detail in (last_scan.get("details") or [])[:10]:
-                scan_lines.append(f"· {detail}")
-        return [
-            {
-                "component": "VRow",
-                "content": [
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12},
-                        "content": [
-                            {
-                                "component": "VAlert",
-                                "props": {
-                                    "type": "info",
-                                    "variant": "tonal",
-                                    "text": (
-                                        f"状态：{'已启用' if self._enabled else '未启用'}　"
-                                        f"补下分辨率：{self._target_pix}　"
-                                        f"预演模式：{'开' if self._dry_run else '关'}　"
-                                        f"已处理：{len(self._history or {})} 部"
-                                    ),
-                                },
-                            },
-                            {
-                                "component": "VAlert",
-                                "props": {
-                                    "type": "secondary",
-                                    "variant": "tonal",
-                                    "class": "mt-2",
-                                    "text": f"生效类别：{self._category_label(self._categories)}（仅电影）",
-                                },
-                            },
-                            {
-                                "component": "VAlert",
-                                "props": {
-                                    "type": "secondary",
-                                    "variant": "tonal",
-                                    "class": "mt-2",
-                                    "text": (
-                                        f"候选筛选：质量={('、'.join(self._quality) or '不限')}　"
-                                        f"编码={('、'.join(self._codec) or '不限')}　"
-                                        f"必含={self._require_words or '-'}　任选={self._any_words or '-'}　"
-                                        f"体积={self._min_size_gb or 0}~{self._max_size_gb or '∞'}GB　"
-                                        f"站点={len(self._sites_selected) or '全部'}"
-                                    ),
-                                },
-                            },
-                            {
-                                "component": "VAlert",
-                                "props": {
-                                    "type": "info",
-                                    "variant": "tonal",
-                                    "class": "mt-2",
-                                    "text": (
-                                        f"媒体库补齐："
-                                        f"{'开启' if self._library_enabled else '关闭'}　"
-                                        f"媒体库={self._library_label() or '未选'}　"
-                                        f"每次={self._library_limit} 部　"
-                                        f"定时={self._library_cron or '仅手动'}　"
-                                        f"{'扫描中…' if self._scan_is_running() else '空闲'}"
-                                        + (
-                                            "｜正在处理："
-                                            + str(
-                                                (self.get_data("library_progress") or {}).get("current")
-                                                or "读取媒体库"
-                                            )
-                                            + f"（第 {(self.get_data('library_progress') or {}).get('index') or 0}"
-                                            + f"/{(self.get_data('library_progress') or {}).get('total') or 0} 部）"
-                                            if self._scan_is_running()
-                                            else ""
-                                        )
-                                    ),
-                                },
-                            },
-                        ],
-                    }
-                ],
-            },
-            {
-                "component": "VRow",
-                "content": [
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12},
-                        "content": [
-                            {
-                                "component": "VCard",
-                                "props": {"variant": "tonal", "class": "mb-2"},
-                                "content": [
-                                    {"component": "VCardTitle", "text": "上次媒体库扫描"},
-                                    {
-                                        "component": "VCardText",
-                                        "text": "\n".join(scan_lines) if scan_lines else "暂无扫描记录",
-                                    },
-                                ],
-                            },
-                            {
-                                "component": "VCard",
-                                "props": {"variant": "tonal"},
-                                "content": [
-                                    {"component": "VCardTitle", "text": "最近补全记录"},
-                                    {
-                                        "component": "VCardText",
-                                        "text": "\n".join(lines) if lines else "暂无记录",
-                                    },
-                                ],
-                            }
-                        ],
-                    }
-                ],
-            },
-        ]
 
     # ------------------------------------------------------------------
     # 表单小工具

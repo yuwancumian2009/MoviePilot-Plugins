@@ -400,6 +400,45 @@ ex_plugin = _plugin(enabled=True, exclude_words="CAM", require_words="国语,中
 c3 = _cand("Movie 2023 1080p CAM-GRP")
 check("宽松兜底仍尊重排除词", len(ex_plugin._filter_candidates([c3], strict_words=False)), 0)
 
+# 手动不限量 + 详情页按钮可点（v1.6.0）
+man = _plugin(enabled=True, library_enabled=True, library_names=["动画电影"], library_limit=3)
+man._scan_limit_override = 0
+check("手动补全描述=全部待补", man._scan_limit_desc(), "全部待补")
+man._scan_limit_override = None
+check("默认按配置上限", man._scan_limit_desc(), "最多 3 部")
+
+
+def _walk_btns(node, out):
+    if isinstance(node, dict):
+        if node.get("component") == "VBtn":
+            out.append(node)
+        for val in node.values():
+            _walk_btns(val, out)
+    elif isinstance(node, list):
+        for val in node:
+            _walk_btns(val, out)
+    return out
+
+
+page = man.get_page()
+page_html = "".join(str(item.get("html") or "") for card in page for item in (card.get("content") or [])) + \
+    "".join(str(inner.get("html") or "") for card in page for item in (card.get("content") or [])
+            for inner in (item.get("content") or []))
+check("详情页有原生按钮条（v-html）", page_html.count("<button") >= 4, True)
+check("详情页按钮带 onclick fetch", "fetch('/api/v1/plugin/DualVersionDownloader/scan" in page_html, True)
+check("详情页有「全部待补」按钮（limit=0）", "scan?limit=0" in page_html, True)
+check("详情页有结果回显区 #dv-live", 'id="dv-live"' in page_html, True)
+check("详情页不再用 events（宿主点击后不刷新数据）", "events" not in str(page), True)
+form_schema, _defaults = man.get_form()
+form_btns = _walk_btns(form_schema, [])
+check("配置页按钮用 onClick（FormRender 不支持 events）", len(form_btns) >= 3, True)
+check(
+    "配置页按钮均带 onClick 脚本",
+    all("onClick" in (b.get("props") or {}) for b in form_btns),
+    True,
+)
+check("配置页按钮不再依赖 events", all("events" not in b for b in form_btns), True)
+
 # ---------------------------------------------------------------- 结果
 passed = sum(1 for _, ok in results if ok)
 print(f"\n共 {len(results)} 项，通过 {passed} 项，失败 {len(results) - passed} 项")
