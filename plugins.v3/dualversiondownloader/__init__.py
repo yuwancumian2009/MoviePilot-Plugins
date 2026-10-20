@@ -78,7 +78,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.7.7"
+    plugin_version = "1.7.8"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -792,6 +792,10 @@ class DualVersionDownloader(_PluginBase):
             return False
         last = (self._library_history or {}).get(key)
         if not last:
+            return False
+        # 老版本遗留：同一条既有在途记录、又有更新的未命中记录 → 以较新的一条为准，不算在途
+        miss = (self._library_missed or {}).get(key)
+        if miss and str(miss) >= str(last):
             return False
         try:
             return datetime.now() - datetime.fromisoformat(last) < timedelta(hours=self._inflight_hours)
