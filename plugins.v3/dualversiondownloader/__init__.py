@@ -1,6 +1,8 @@
 import json
+import os
 import re
 import threading
+import time
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -33,8 +35,8 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.3.1"
-    version = "1.3.1"
+    plugin_version = "1.4.0"
+    version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -49,6 +51,21 @@ class DualVersionDownloader(_PluginBase):
     # 4K / 1080p 判定
     _RE_4K = re.compile(r"(?i)(\b4k\b|2160[pi]|x2160|\buhd\b)")
     _RE_1080 = re.compile(r"(?i)(1080p|x1080)")
+
+    # 候选筛选：质量 / 视频编码（按顺序优先匹配）
+    _QUALITY_RULES = (
+        ("Remux", re.compile(r"(?i)remux")),
+        ("BluRay", re.compile(r"(?i)(blu-?ray|bdrip|bd-?rip|\bbd\b)")),
+        ("WEB-DL", re.compile(r"(?i)(web-?dl|webrip|\bweb\b)")),
+        ("HDTV", re.compile(r"(?i)hdtv")),
+    )
+    _CODEC_RULES = (
+        ("H265", re.compile(r"(?i)(h\.?265|x265|hevc)")),
+        ("H264", re.compile(r"(?i)(h\.?264|x264|\bavc\b)")),
+        ("AV1", re.compile(r"(?i)\bav1\b")),
+    )
+    # Emby 请求字段
+    _EMBY_FIELDS = "Path,ProviderIds,ProductionYear,DateCreated,Name,MediaSources"
 
     # 类别缓存有效期
     _CATEGORY_CACHE_HOURS = 12
@@ -68,7 +85,26 @@ class DualVersionDownloader(_PluginBase):
         self._sites: str = ""
         self._cooldown_days: int = 7
         self._exclude_words: str = "CAM,TS,枪版,TC"
+        self._require_words: str = ""
+        self._any_words: str = ""
+        self._quality: List[str] = []
+        self._codec: List[str] = []
+        self._min_size_gb: float = 0.0
+        self._sites_selected: List[int] = []
         self._categories: List[str] = []
+        # 媒体库补齐
+        self._library_enabled: bool = False
+        self._library_cron: str = ""
+        self._library_names: List[str] = []
+        self._library_server: str = ""
+        self._library_save_path: str = ""
+        self._library_downloader: str = ""
+        self._library_limit: int = 3
+        self._library_cooldown_days: int = 30
+        self._library_history: Dict[str, str] = {}
+        self._scan_running: bool = False
+        self._scan_lock = threading.Lock()
+        self._http_client: Optional[Any] = None
         self._category_names: Dict[str, str] = {}
         self._config: Dict[str, Any] = {}
         self._history: Dict[str, str] = {}
@@ -92,14 +128,39 @@ class DualVersionDownloader(_PluginBase):
         self._only_subscribe = bool(self._config.get("only_subscribe", True))
         self._target_pix = str(self._config.get("target_pix") or "1080p").strip()
         self._prefer = str(self._config.get("prefer") or "seeders").strip()
-        self._sites = str(self._config.get("sites") or "").strip()
+        self._sites_selected = self._as_site_ids(self._config.get("sites"))
+        self._sites = ",".join(str(x) for x in self._sites_selected)
         self._exclude_words = str(self._config.get("exclude_words") or "").strip()
+        self._require_words = str(self._config.get("require_words") or "").strip()
+        self._any_words = str(self._config.get("any_words") or "").strip()
+        self._quality = self._as_list(self._config.get("quality"))
+        self._codec = self._as_list(self._config.get("video_codec"))
         self._categories = self._as_list(self._config.get("categories"))
+
+        # 媒体库补齐
+        self._library_enabled = bool(self._config.get("library_enabled", False))
+        self._library_cron = str(self._config.get("library_cron") or "").strip()
+        self._library_names = self._as_list(self._config.get("library_names"))
+        self._library_server = str(self._config.get("library_server") or "").strip()
+        self._library_save_path = str(self._config.get("library_save_path") or "").strip()
+        self._library_downloader = str(self._config.get("library_downloader") or "").strip()
+        try:
+            self._library_limit = max(0, int(self._config.get("library_limit") or 3))
+        except (TypeError, ValueError):
+            self._library_limit = 3
+        try:
+            self._library_cooldown_days = int(self._config.get("library_cooldown_days", 30) or 0)
+        except (TypeError, ValueError):
+            self._library_cooldown_days = 0
 
         try:
             self._max_size_gb = float(self._config.get("max_size_gb") or 0)
         except (TypeError, ValueError):
             self._max_size_gb = 0.0
+        try:
+            self._min_size_gb = float(self._config.get("min_size_gb") or 0)
+        except (TypeError, ValueError):
+            self._min_size_gb = 0.0
         try:
             self._min_seeders = int(self._config.get("min_seeders") or 0)
         except (TypeError, ValueError):
@@ -113,6 +174,8 @@ class DualVersionDownloader(_PluginBase):
         self._history = history if isinstance(history, dict) else {}
         hashes = self.get_data("hashes")
         self._hashes = hashes if isinstance(hashes, dict) else {}
+        lib_history = self.get_data("library_history")
+        self._library_history = lib_history if isinstance(lib_history, dict) else {}
         self._prune_history()
 
         self._policy_cache = None
@@ -124,7 +187,12 @@ class DualVersionDownloader(_PluginBase):
             f"dry_run={self._dry_run}，only_subscribe={self._only_subscribe}，"
             f"类别={self._category_label(self._categories)}(仅电影)，"
             f"max_size_gb={self._max_size_gb}，min_seeders={self._min_seeders}，"
-            f"prefer={self._prefer}，cooldown_days={self._cooldown_days}"
+            f"prefer={self._prefer}，cooldown_days={self._cooldown_days}，"
+            f"筛选(质量={self._quality or '不限'}，编码={self._codec or '不限'}，"
+            f"必含={self._require_words or '-'}，任选={self._any_words or '-'})，"
+            f"站点={len(self._sites_selected) or '全部'}，"
+            f"库补齐={self._library_enabled}"
+            f"({self._library_label() or '未选库'}，每次{self._library_limit}部)"
         )
 
     def get_state(self) -> bool:
@@ -135,7 +203,18 @@ class DualVersionDownloader(_PluginBase):
         pass
 
     def get_service(self) -> List[Dict[str, Any]]:
-        return []
+        """媒体库补齐的定时扫描（默认每天执行，可从配置改 cron）。"""
+        if not (self._library_enabled and self._library_names and self._library_cron):
+            return []
+        return [
+            {
+                "id": "DualVersionLibraryScan",
+                "name": "媒体库4K补齐",
+                "trigger": self._library_cron,
+                "func": self._scheduled_library_scan,
+                "kwargs": {},
+            }
+        ]
 
     def get_api(self) -> List[Dict[str, Any]]:
         return [
@@ -152,6 +231,34 @@ class DualVersionDownloader(_PluginBase):
                 "methods": ["POST"],
                 "summary": "试算一部电影的类别",
                 "description": "传 tmdb_id，返回该片命中的媒体类别及是否在当前生效范围内（不下载）",
+            },
+            {
+                "path": "/sites",
+                "endpoint": self.api_sites,
+                "methods": ["GET"],
+                "summary": "获取站点下拉选项",
+                "description": "返回 MoviePilot 已启用站点（id + 名称），供配置页多选使用",
+            },
+            {
+                "path": "/libraries",
+                "endpoint": self.api_libraries,
+                "methods": ["GET"],
+                "summary": "获取媒体库下拉选项",
+                "description": "返回 Emby/Jellyfin 中的电影类媒体库名称，供媒体库补齐配置使用",
+            },
+            {
+                "path": "/scan",
+                "endpoint": self.api_scan,
+                "methods": ["GET", "POST"],
+                "summary": "立即执行媒体库补齐扫描",
+                "description": "扫描所选媒体库中只有 4K 没有 1080p 的电影并补下 1080p（后台执行）",
+            },
+            {
+                "path": "/scan_status",
+                "endpoint": self.api_scan_status,
+                "methods": ["GET"],
+                "summary": "查询扫描状态",
+                "description": "返回是否运行中、上次扫描结果",
             },
         ]
 
@@ -188,6 +295,457 @@ class DualVersionDownloader(_PluginBase):
             "matched": (not self._categories) or (category_id in self._categories),
         }
 
+    # ------------------------------------------------------------------
+    # 站点 / 媒体库选项
+    # ------------------------------------------------------------------
+
+    def api_sites(self) -> Dict[str, Any]:
+        """站点下拉选项（id -> 名称）。"""
+        items = self._site_options()
+        return {"items": items, "count": len(items), "selected": self._sites_selected}
+
+    def api_libraries(self) -> Dict[str, Any]:
+        """媒体库下拉选项（只列电影库）。"""
+        items = self._library_options()
+        return {"items": items, "count": len(items), "selected": self._library_names}
+
+    def api_scan(self) -> Dict[str, Any]:
+        """立即触发一次媒体库补齐扫描（后台线程）。"""
+        if not self._library_names:
+            return {"started": False, "running": self._scan_running, "message": "未选择要扫描的媒体库"}
+        if not self._library_enabled:
+            return {"started": False, "running": self._scan_running, "message": "配置中未开启「媒体库补齐」"}
+        started = self._start_scan()
+        return {
+            "started": started,
+            "running": True,
+            "message": "已开始扫描" if started else "已有扫描在运行，请稍候",
+        }
+
+    def api_scan_status(self) -> Dict[str, Any]:
+        """扫描状态与上次结果。"""
+        return {
+            "running": self._scan_running,
+            "enabled": self._library_enabled,
+            "libraries": self._library_names,
+            "limit": self._library_limit,
+            "dry_run": self._dry_run,
+            "history": len(self._library_history or {}),
+            "last": self.get_data("library_last") or {},
+        }
+
+    def _site_options(self) -> List[dict]:
+        try:
+            from app.db.oper.site import SiteOper
+
+            sites = SiteOper().list_active()
+        except Exception as err:  # noqa: BLE001
+            logger.warn(f"双版本补全：读取站点列表失败：{err}")
+            return []
+        items = []
+        for site in sites or []:
+            sid = getattr(site, "id", None)
+            name = getattr(site, "name", None) or str(sid or "")
+            if sid is None:
+                continue
+            items.append({"title": str(name), "value": int(sid)})
+        return items
+
+    def _library_options(self) -> List[dict]:
+        items: List[dict] = []
+        for library in self._emby_libraries():
+            collection_type = str(library.get("CollectionType") or "").lower()
+            if collection_type and collection_type != "movies":
+                continue
+            name = str(library.get("Name") or "").strip()
+            if name:
+                items.append({"title": name, "value": name})
+        return items
+
+    def _server_options(self) -> List[dict]:
+        """配置页可选的媒体服务器（Emby/Jellyfin）。"""
+        try:
+            servers = self.systemconfig.get(SystemConfigKey.MediaServers) or []
+        except Exception:  # noqa: BLE001
+            return []
+        if isinstance(servers, dict):
+            servers = list(servers.values())
+        items = []
+        for server in servers:
+            if not isinstance(server, dict) or not server.get("enabled"):
+                continue
+            if str(server.get("type") or "").lower() not in ("emby", "jellyfin"):
+                continue
+            name = str(server.get("name") or "").strip()
+            if name:
+                items.append({"title": name, "value": name})
+        return items
+
+    def _library_label(self) -> str:
+        return "、".join(self._library_names) if self._library_names else ""
+
+    # ------------------------------------------------------------------
+    # 媒体服务器（Emby / Jellyfin）只读客户端
+    # ------------------------------------------------------------------
+
+    def _http(self) -> Any:
+        if self._http_client is None:
+            from app.sdk.network import RequestUtils
+
+            self._http_client = RequestUtils(content_type="application/json")
+        return self._http_client
+
+    def _media_server_conf(self) -> Tuple[Optional[str], Optional[str], str]:
+        """返回 (host, api_key, 路径前缀)；优先配置中指定的服务器名。"""
+        try:
+            servers = self.systemconfig.get(SystemConfigKey.MediaServers) or []
+        except Exception as err:  # noqa: BLE001
+            logger.warn(f"双版本补全：读取媒体服务器配置失败：{err}")
+            return None, None, ""
+        if isinstance(servers, dict):
+            servers = list(servers.values())
+        for server in servers:
+            if not isinstance(server, dict) or not server.get("enabled"):
+                continue
+            server_type = str(server.get("type") or "").lower()
+            if server_type not in ("emby", "jellyfin"):
+                continue
+            if self._library_server and str(server.get("name") or "") != self._library_server:
+                continue
+            conf = server.get("config") or {}
+            host = str(conf.get("host") or "").strip().rstrip("/")
+            api_key = str(conf.get("apikey") or "").strip()
+            if not (host and api_key):
+                continue
+            prefix = "emby" if server_type == "emby" else ""
+            return host, api_key, prefix
+        return None, None, ""
+
+    def _media_get(self, path: str, **params: Any) -> Optional[Any]:
+        host, api_key, prefix = self._media_server_conf()
+        if not host:
+            return None
+        url = f"{host}/{prefix}/{path}" if prefix else f"{host}/{path}"
+        params["api_key"] = api_key
+        try:
+            response = self._http().get_res(url=url, params=params, timeout=60)
+        except Exception as err:  # noqa: BLE001
+            logger.warn(f"双版本补全：请求媒体服务器失败（{path}）：{err}")
+            return None
+        if response is None:
+            return None
+        if int(getattr(response, "status_code", 0) or 0) >= 300:
+            logger.warn(f"双版本补全：媒体服务器返回 HTTP {getattr(response, 'status_code', '?')}（{path}）")
+            return None
+        try:
+            return response.json()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _emby_libraries(self) -> List[dict]:
+        data = self._media_get("Library/VirtualFolders")
+        return [item for item in (data or []) if isinstance(item, dict)]
+
+    def _emby_movies(self, parent_id: str) -> Any:
+        """按分页遍历媒体库中的电影（生成器）。"""
+        start, page_size = 0, 500
+        while True:
+            data = self._media_get(
+                "Items",
+                Recursive="true",
+                IncludeItemTypes="Movie",
+                ParentId=parent_id,
+                Fields=self._EMBY_FIELDS,
+                StartIndex=start,
+                Limit=page_size,
+                EnableTotalRecordCount="false",
+                ImageTypeLimit=0,
+            )
+            items = [item for item in ((data or {}).get("Items") or []) if isinstance(item, dict)]
+            for item in items:
+                yield item
+            if len(items) < page_size:
+                return
+            start += page_size
+
+    # ------------------------------------------------------------------
+    # 媒体库补齐：扫描 + 补下
+    # ------------------------------------------------------------------
+
+    def _start_scan(self) -> bool:
+        with self._scan_lock:
+            if self._scan_running:
+                return False
+            self._scan_running = True
+        threading.Thread(
+            target=self._library_scan_worker, name="DualVersionLibraryScan", daemon=True
+        ).start()
+        return True
+
+    def _scheduled_library_scan(self) -> None:
+        """定时任务入口。"""
+        if not (self._library_enabled and self._library_names):
+            return
+        if not self._start_scan():
+            logger.info("双版本补全：上一轮媒体库补齐仍在运行，跳过本轮")
+
+    def _collect_library_movies(self) -> Dict[str, Dict[str, Any]]:
+        """按 TMDB 归并媒体库条目，标记是否已有 4K / 1080p。"""
+        library_map = {
+            str(item.get("Name") or ""): str(item.get("ItemId") or item.get("Id") or "")
+            for item in self._emby_libraries()
+            if item.get("Name")
+        }
+        groups: Dict[str, Dict[str, Any]] = {}
+        for name in self._library_names:
+            parent_id = library_map.get(name)
+            if not parent_id:
+                logger.warn(f"双版本补全：媒体库「{name}」不存在，跳过")
+                continue
+            count = 0
+            for item in self._emby_movies(parent_id):
+                count += 1
+                path = str(item.get("Path") or "")
+                if not path:
+                    continue
+                ids = item.get("ProviderIds") or {}
+                tmdb_id = str(ids.get("Tmdb") or "").strip()
+                key = f"tmdb:{tmdb_id}" if tmdb_id else f"dir:{os.path.dirname(path)}"
+                group = groups.get(key)
+                if group is None:
+                    group = {
+                        "key": key,
+                        "tmdb": tmdb_id,
+                        "title": str(item.get("Name") or tmdb_id or key),
+                        "year": int(item.get("ProductionYear") or 0),
+                        "has4k": False,
+                        "has1080": False,
+                        "library": name,
+                        "path": path,
+                    }
+                    groups[key] = group
+                if self._RE_4K.search(path):
+                    group["has4k"] = True
+                if self._RE_1080.search(path):
+                    group["has1080"] = True
+            logger.info(f"双版本补全：媒体库「{name}」共 {count} 个电影条目")
+        return groups
+
+    def _library_in_cooldown(self, key: str) -> bool:
+        if self._library_cooldown_days <= 0:
+            return False
+        last = (self._library_history or {}).get(key)
+        if not last:
+            return False
+        try:
+            return datetime.now() - datetime.fromisoformat(last) < timedelta(days=self._library_cooldown_days)
+        except ValueError:
+            return False
+
+    def _library_mark(self, key: str) -> None:
+        with self._lock:
+            self._library_history[key] = datetime.now().isoformat(timespec="seconds")
+            self._prune_library_history()
+            self.save_data("library_history", self._library_history)
+
+    def _prune_library_history(self) -> None:
+        limit = datetime.now() - timedelta(days=365)
+        cleaned: Dict[str, str] = {}
+        for key, value in (self._library_history or {}).items():
+            try:
+                if datetime.fromisoformat(str(value)) >= limit:
+                    cleaned[str(key)] = str(value)
+            except ValueError:
+                continue
+        if len(cleaned) > 2000:
+            newest = sorted(cleaned.items(), key=lambda kv: kv[1], reverse=True)[:2000]
+            cleaned = dict(newest)
+        self._library_history = cleaned
+
+    def _resolve_library_save_path(self) -> Optional[str]:
+        """1080p 的下载目录：优先配置，其次按目录设置里「电影」目录自动推断。"""
+        if self._library_save_path:
+            return self._library_save_path
+        try:
+            entries = self.systemconfig.get(SystemConfigKey.Directories) or []
+        except Exception as err:  # noqa: BLE001
+            logger.warn(f"双版本补全：读取目录设置失败：{err}")
+            return None
+        if isinstance(entries, dict):
+            entries = list(entries.values())
+        fallback = None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            download_path = str(entry.get("download_path") or "").strip()
+            library_path = str(entry.get("library_path") or "").rstrip("/")
+            if not download_path or not library_path.endswith("/电影"):
+                continue
+            if str(entry.get("monitor_type") or "") == "downloader":
+                return download_path
+            fallback = fallback or download_path
+        return fallback
+
+    def _library_scan_worker(self) -> None:
+        """扫描媒体库并补下 1080p。"""
+        started_at = datetime.now().isoformat(timespec="seconds")
+        summary: Dict[str, Any] = {
+            "started_at": started_at,
+            "libraries": list(self._library_names),
+            "scanned": 0,
+            "pending": 0,
+            "downloaded": 0,
+            "skipped": 0,
+            "missed": 0,
+            "failed": 0,
+            "details": [],
+            "finished_at": None,
+        }
+        details: List[str] = summary["details"]
+        try:
+            logger.info(f"双版本补全：开始扫描媒体库 {self._library_label()}（每次最多 {self._library_limit} 部）")
+            groups = self._collect_library_movies()
+            summary["scanned"] = len(groups)
+            pending = [
+                group
+                for group in groups.values()
+                if group.get("has4k") and not group.get("has1080")
+                and not self._library_in_cooldown(group.get("key") or "")
+            ]
+            summary["pending"] = len(pending)
+            pending.sort(key=lambda g: (-int(g.get("year") or 0), str(g.get("title") or "")))
+            logger.info(
+                f"双版本补全：库内 {len(groups)} 部，只有 4K 无 1080p 的 {len(pending)} 部，"
+                f"本轮处理 {min(len(pending), self._library_limit)} 部"
+            )
+
+            for group in pending[: max(0, self._library_limit)]:
+                status, message = self._backfill_library_movie(group)
+                if status == "ok":
+                    summary["downloaded"] += 1
+                elif status == "miss":
+                    summary["missed"] += 1
+                elif status == "fail":
+                    summary["failed"] += 1
+                else:
+                    summary["skipped"] += 1
+                details.append(f"{message}")
+                time.sleep(3)
+        except Exception as err:  # noqa: BLE001
+            logger.error(f"双版本补全：媒体库扫描出错：{err}", exc_info=True)
+            summary["error"] = str(err)
+            details.append(f"扫描出错：{err}")
+        finally:
+            summary["finished_at"] = datetime.now().isoformat(timespec="seconds")
+            self._scan_running = False
+            try:
+                self.save_data("library_last", summary)
+            except Exception:  # noqa: BLE001
+                pass
+            logger.info(
+                f"双版本补全：媒体库扫描结束，扫描 {summary['scanned']} 部，待补 {summary['pending']} 部，"
+                f"补下成功 {summary['downloaded']}，未命中 {summary['missed']}，"
+                f"跳过 {summary['skipped']}，失败 {summary['failed']}"
+            )
+            if self._notify_enabled and (summary["downloaded"] or summary["failed"]):
+                head = (
+                    f"媒体库补齐完成：补下 {summary['downloaded']} 部"
+                    f"（待补 {summary['pending']}，未命中 {summary['missed']}，失败 {summary['failed']}）"
+                )
+                tail = "\n".join(details[:5])
+                self._notify(head + ("\n" + tail if tail else ""), ok=not summary["failed"])
+
+    def _backfill_library_movie(self, group: Dict[str, Any]) -> Tuple[str, str]:
+        """为单部影片补下 1080p，返回 (状态, 说明)。"""
+        key = str(group.get("key") or "")
+        tmdb_id = str(group.get("tmdb") or "").strip()
+        name = str(group.get("title") or tmdb_id)
+        if not tmdb_id:
+            return "skip", f"{name}：无 TMDB 标识，跳过"
+        try:
+            from app.chain.media import MediaChain
+            from app.schemas.types import MediaSource
+
+            mediainfo = MediaChain().recognize_media(
+                mtype=MediaType.MOVIE, media_source=MediaSource.TMDB, media_id=tmdb_id
+            )
+        except Exception as err:  # noqa: BLE001
+            return "fail", f"{name}：识别失败（{err}）"
+        if not mediainfo:
+            return "skip", f"{name}：TMDB 未识别到，跳过"
+
+        head = f"{getattr(mediainfo, 'title', name) or name}（{getattr(mediainfo, 'year', '') or ''}）"
+        if self._categories:
+            passed, category_name = self._category_pass(mediainfo)
+            if not passed:
+                self._library_mark(key)
+                return "skip", f"{head}：类别 {category_name} 不在生效范围"
+
+        try:
+            candidates = self._search_candidates(mediainfo)
+        except Exception as err:  # noqa: BLE001
+            return "fail", f"{head}：搜索出错（{err}）"
+        if not candidates:
+            self._library_mark(key)
+            return "miss", f"{head}：未找到符合规则的 {self._target_pix}"
+
+        best = candidates[0]
+        torrent = getattr(best, "torrent_info", None)
+        best_title = getattr(torrent, "title", "") or ""
+        site_name = getattr(torrent, "site_name", "") or ""
+        size_gb = round((getattr(torrent, "size", 0) or 0) / 1024 ** 3, 2)
+        save_path = self._resolve_library_save_path()
+
+        if self._dry_run:
+            self._library_mark(key)
+            logger.info(
+                f"双版本补全[预演·库补齐]：{head} 将补下 {best_title}"
+                f"（{site_name}，{size_gb}GB，目录 {save_path or '默认'}）"
+            )
+            return "dry", f"{head}：预演命中 {best_title}（{size_gb}GB）"
+
+        try:
+            download_hash = DownloadChain().download_single(
+                context=best,
+                save_path=save_path,
+                downloader=self._library_downloader or None,
+                source="Plugin|双版本补全",
+            )
+        except Exception as err:  # noqa: BLE001
+            return "fail", f"{head}：下载提交出错（{err}）"
+        if not download_hash:
+            return "fail", f"{head}：下载器未接受任务（{best_title}）"
+        self._library_mark(key)
+        logger.info(
+            f"双版本补全[库补齐]：{head} 已补下 {best_title}"
+            f"（{site_name}，{size_gb}GB，目录 {save_path or '默认'}，hash={download_hash}）"
+        )
+        return "ok", f"{head}：已补下 {best_title}（{size_gb}GB）"
+
+    @staticmethod
+    def _as_site_ids(raw: Any) -> List[int]:
+        """站点配置兼容：列表/逗号串 -> int 列表。"""
+        values = []
+        if raw is None:
+            return values
+        if isinstance(raw, str):
+            values = [x for x in re.split(r"[,\s]+", raw) if x.strip()]
+        elif isinstance(raw, (list, tuple, set)):
+            for item in raw:
+                if isinstance(item, dict):
+                    item = item.get("value") or item.get("id")
+                if item is not None:
+                    values.append(str(item).strip())
+        result = []
+        for value in values:
+            try:
+                number = int(str(value).strip())
+            except (TypeError, ValueError):
+                continue
+            if number not in result:
+                result.append(number)
+        return result
+
     def get_command(self) -> List[Dict[str, Any]]:
         return []
 
@@ -197,6 +755,9 @@ class DualVersionDownloader(_PluginBase):
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         category_items = self._category_select_items()
+        site_items = self._site_options()
+        library_items = self._library_options()
+        server_items = self._server_options()
         return [
             {
                 "component": "VForm",
@@ -263,8 +824,189 @@ class DualVersionDownloader(_PluginBase):
                         "component": "VRow",
                         "content": [
                             self._col_text("cooldown_days", "同一影片冷却天数(0为不去重)", "7"),
-                            self._col_text("sites", "限定站点ID(逗号分隔，留空为全部)", ""),
+                            self._col_text("min_size_gb", "候选最小体积(GB，0为不限)", "0"),
                             self._col_text("exclude_words", "排除关键词(逗号分隔)", "CAM,TS,枪版,TC"),
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "sites",
+                                            "label": "限定站点（不选=全部站点）",
+                                            "items": site_items,
+                                            "multiple": True,
+                                            "chips": True,
+                                            "closableChips": True,
+                                            "clearable": True,
+                                            "hint": "来自 MoviePilot 已启用站点；站点越多全站搜索越慢",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "quality",
+                                            "label": "质量（不选=不限）",
+                                            "items": [
+                                                {"title": name, "value": name}
+                                                for name in ("Remux", "BluRay", "WEB-DL", "HDTV")
+                                            ],
+                                            "multiple": True,
+                                            "chips": True,
+                                            "closableChips": True,
+                                            "clearable": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 3},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "video_codec",
+                                            "label": "视频编码（不选=不限）",
+                                            "items": [
+                                                {"title": name, "value": name}
+                                                for name in ("H265", "H264", "AV1")
+                                            ],
+                                            "multiple": True,
+                                            "chips": True,
+                                            "closableChips": True,
+                                            "clearable": True,
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self._col_text(
+                                "require_words", "必须包含关键词(全部命中，如 中字,中语)", "", md=6
+                            ),
+                            self._col_text(
+                                "any_words", "任选关键词(命中任一，如 中字,中英,国语)", "", md=6
+                            ),
+                        ],
+                    },
+                    {"component": "VDivider", "props": {"class": "my-4"}},
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VAlert",
+                                        "props": {
+                                            "type": "warning",
+                                            "variant": "tonal",
+                                            "text": (
+                                                "媒体库补齐：扫描所选媒体库中「只有 4K、没有 1080p」的电影，"
+                                                "自动搜索并按上面的筛选规则补下 1080p 到电影下载目录，"
+                                                "再由 MoviePilot 整理进与 4K 相同的文件夹。"
+                                                "建议先开「仅预演不下载」跑一轮确认结果。"
+                                            ),
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self._col_switch("library_enabled", "启用媒体库补齐"),
+                            self._col_text("library_limit", "每次最多补几部", "3", md=3),
+                            self._col_text("library_cooldown_days", "同一影片重试间隔(天)", "30", md=3),
+                            self._col_text("library_cron", "定时扫描(cron，留空=仅手动)", "0 4 * * *", md=3),
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "library_names",
+                                            "label": "扫描的媒体库（多选）",
+                                            "items": library_items,
+                                            "multiple": True,
+                                            "chips": True,
+                                            "closableChips": True,
+                                            "clearable": True,
+                                            "hint": "列表来自 Emby/Jellyfin 的电影库，如 动画电影 / 华语电影 / 外语电影",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 4},
+                                "content": [
+                                    {
+                                        "component": "VSelect",
+                                        "props": {
+                                            "model": "library_server",
+                                            "label": "媒体服务器（不选=第一个 Emby）",
+                                            "items": server_items,
+                                            "clearable": True,
+                                        },
+                                    }
+                                ],
+                            },
+                            self._col_text(
+                                "library_save_path", "1080p 下载目录(留空=自动取电影下载目录)", "", md=4
+                            ),
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            self._col_text("library_downloader", "指定下载器(留空=默认)", "", md=4),
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 8},
+                                "content": [
+                                    {
+                                        "component": "VBtn",
+                                        "props": {
+                                            "variant": "tonal",
+                                            "color": "primary",
+                                            "prepend-icon": "mdi-radar",
+                                            "class": "mt-2",
+                                        },
+                                        "text": "立即扫描一次",
+                                        "events": {
+                                            "click": {
+                                                "api": "/plugin/DualVersionDownloader/scan",
+                                                "method": "GET",
+                                            }
+                                        },
+                                    }
+                                ],
+                            },
                         ],
                     },
                     {
@@ -303,8 +1045,21 @@ class DualVersionDownloader(_PluginBase):
             "min_seeders": 0,
             "prefer": "seeders",
             "cooldown_days": 7,
-            "sites": "",
+            "min_size_gb": 0,
+            "sites": [],
+            "quality": [],
+            "video_codec": [],
+            "require_words": "",
+            "any_words": "",
             "exclude_words": "CAM,TS,枪版,TC",
+            "library_enabled": False,
+            "library_cron": "0 4 * * *",
+            "library_names": [],
+            "library_server": "",
+            "library_save_path": "",
+            "library_downloader": "",
+            "library_limit": 3,
+            "library_cooldown_days": 30,
         }
 
     def get_page(self) -> List[dict]:
@@ -312,6 +1067,18 @@ class DualVersionDownloader(_PluginBase):
             (self._history or {}).items(), key=lambda kv: kv[1], reverse=True
         )[:20]
         lines = [f"{ts[:19].replace('T', ' ')}  {key}" for key, ts in records]
+
+        last_scan = self.get_data("library_last") or {}
+        scan_lines: List[str] = []
+        if isinstance(last_scan, dict) and last_scan:
+            scan_lines.append(
+                f"{str(last_scan.get('started_at') or '')[:19].replace('T', ' ')} 扫描 "
+                f"{last_scan.get('scanned', 0)} 部｜待补 {last_scan.get('pending', 0)}｜"
+                f"补下 {last_scan.get('downloaded', 0)}｜未命中 {last_scan.get('missed', 0)}｜"
+                f"失败 {last_scan.get('failed', 0)}"
+            )
+            for detail in (last_scan.get("details") or [])[:10]:
+                scan_lines.append(f"· {detail}")
         return [
             {
                 "component": "VRow",
@@ -342,6 +1109,37 @@ class DualVersionDownloader(_PluginBase):
                                     "text": f"生效类别：{self._category_label(self._categories)}（仅电影）",
                                 },
                             },
+                            {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": "secondary",
+                                    "variant": "tonal",
+                                    "class": "mt-2",
+                                    "text": (
+                                        f"候选筛选：质量={('、'.join(self._quality) or '不限')}　"
+                                        f"编码={('、'.join(self._codec) or '不限')}　"
+                                        f"必含={self._require_words or '-'}　任选={self._any_words or '-'}　"
+                                        f"体积={self._min_size_gb or 0}~{self._max_size_gb or '∞'}GB　"
+                                        f"站点={len(self._sites_selected) or '全部'}"
+                                    ),
+                                },
+                            },
+                            {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": "info",
+                                    "variant": "tonal",
+                                    "class": "mt-2",
+                                    "text": (
+                                        f"媒体库补齐："
+                                        f"{'开启' if self._library_enabled else '关闭'}　"
+                                        f"媒体库={self._library_label() or '未选'}　"
+                                        f"每次={self._library_limit} 部　"
+                                        f"定时={self._library_cron or '仅手动'}　"
+                                        f"{'扫描中…' if self._scan_running else '空闲'}"
+                                    ),
+                                },
+                            },
                         ],
                     }
                 ],
@@ -353,6 +1151,17 @@ class DualVersionDownloader(_PluginBase):
                         "component": "VCol",
                         "props": {"cols": 12},
                         "content": [
+                            {
+                                "component": "VCard",
+                                "props": {"variant": "tonal", "class": "mb-2"},
+                                "content": [
+                                    {"component": "VCardTitle", "text": "上次媒体库扫描"},
+                                    {
+                                        "component": "VCardText",
+                                        "text": "\n".join(scan_lines) if scan_lines else "暂无扫描记录",
+                                    },
+                                ],
+                            },
                             {
                                 "component": "VCard",
                                 "props": {"variant": "tonal"},
@@ -744,7 +1553,9 @@ class DualVersionDownloader(_PluginBase):
 
     def _filter_candidates(self, contexts: List[Any]) -> List[Any]:
         """从搜索结果里挑出目标分辨率的候选并排序（纯函数，便于自测）。"""
-        excludes = [w.strip().lower() for w in re.split(r"[,\s]+", self._exclude_words) if w.strip()]
+        excludes = self._words(self._exclude_words)
+        requires = self._words(self._require_words)
+        anys = self._words(self._any_words)
         picked: List[Any] = []
         for item in contexts:
             torrent = getattr(item, "torrent_info", None)
@@ -754,10 +1565,23 @@ class DualVersionDownloader(_PluginBase):
             text = self._pix_text(torrent, meta)
             if self._RE_4K.search(text) or not self._RE_1080.search(text):
                 continue
-            if any(word in text.lower() for word in excludes):
+            lowered = text.lower()
+            if any(word in lowered for word in excludes):
+                continue
+            # 必须包含（全部命中，等价订阅规则的「包含」多关键词）
+            if requires and not all(word in lowered for word in requires):
+                continue
+            # 任选其一（命中任一，等价订阅规则的多选项「包含」）
+            if anys and not any(word in lowered for word in anys):
+                continue
+            if self._quality and self._quality_of(text) not in self._quality:
+                continue
+            if self._codec and self._codec_of(text) not in self._codec:
                 continue
             size = getattr(torrent, "size", 0) or 0
             if self._max_size_gb > 0 and size > self._max_size_gb * 1024 ** 3:
+                continue
+            if self._min_size_gb > 0 and size < self._min_size_gb * 1024 ** 3:
                 continue
             if self._min_seeders > 0 and (getattr(torrent, "seeders", 0) or 0) < self._min_seeders:
                 continue
@@ -770,6 +1594,27 @@ class DualVersionDownloader(_PluginBase):
             picked.sort(key=lambda c: (-(getattr(c.torrent_info, "seeders", 0) or 0),
                                        getattr(c.torrent_info, "size", 0) or 0))
         return picked
+
+    @staticmethod
+    def _words(raw: Any) -> List[str]:
+        """逗号/空格分隔的关键词表（小写）。"""
+        return [word.strip().lower() for word in re.split(r"[,\s]+", str(raw or "")) if word.strip()]
+
+    @classmethod
+    def _quality_of(cls, text: str) -> str:
+        """从标题里识别来源质量：Remux / BluRay / WEB-DL / HDTV。"""
+        for name, pattern in cls._QUALITY_RULES:
+            if pattern.search(text):
+                return name
+        return ""
+
+    @classmethod
+    def _codec_of(cls, text: str) -> str:
+        """从标题里识别视频编码：H265 / H264 / AV1。"""
+        for name, pattern in cls._CODEC_RULES:
+            if pattern.search(text):
+                return name
+        return ""
 
     @staticmethod
     def _pix_text(torrent: Any, meta: Any) -> str:

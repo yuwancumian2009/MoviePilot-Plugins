@@ -62,14 +62,15 @@
   },
   "DualVersionDownloader": {
     "name": "双版本补全",
-    "description": "电影订阅下载 4K 版本时，自动补一个 1080p 版本到同一目录；可按媒体库类别（动画电影/华语电影/外语电影）限定生效范围，下载 1080p 时不处理。",
+    "description": "电影 4K 版本自动补 1080p（同目录）；支持媒体库扫描补齐、站点多选与质量/编码/中字中语等筛选规则",
     "labels": "订阅",
-    "version": "1.3.1",
+    "version": "1.4.0",
     "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/dualversiondownloader.png",
     "author": "yuwancumian2009",
     "level": 1,
     "release": true,
     "history": {
+      "v1.4.0": "站点改为多选下拉；新增媒体库补齐（扫描只有4K没有1080p的电影并补下）；新增质量/视频编码/必含/任选关键词/最小体积筛选",
       "v1.3.1": "新增 /probe 试算接口，可验证某部电影命中的媒体类别",
       "v1.3.0": "仅处理电影（移除剧集支持）；生效范围改为按媒体库类别筛选（动画电影/华语电影/外语电影）",
       "v1.2.5": "剧集补种优先精确命中目标集号，避免单集需求被做种数更高的整季包顶掉",

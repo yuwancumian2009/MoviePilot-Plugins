@@ -6,6 +6,7 @@
 import importlib.util
 import sys
 import types
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -86,7 +87,11 @@ _stub(
         TV=types.SimpleNamespace(value="电视剧"),
     ),
     MessageType=types.SimpleNamespace(Plugin="Plugin"),
-    SystemConfigKey=types.SimpleNamespace(MediaClassificationPolicy="MediaClassificationPolicy"),
+    SystemConfigKey=types.SimpleNamespace(
+        MediaClassificationPolicy="MediaClassificationPolicy",
+        Directories="Directories",
+        MediaServers="MediaServers",
+    ),
 )
 
 _spec = importlib.util.spec_from_file_location("dvd_plugin", ROOT / "__init__.py")
@@ -237,6 +242,90 @@ p1080 = _plugin(enabled=True)
 p1080.on_download_added(types.SimpleNamespace(event_data={
     "context": _ctx(title="Film 2023 1080p"), "source": "Subscribe|x", "hash": "jkl"}))
 check("1080p 下载不处理", p1080._history, {})
+
+
+# ---------------------------------------------------------------- v1.4.0 新增
+check("质量识别 BluRay", DualVersionDownloader._quality_of("Film 2023 1080p BluRay x264"), "BluRay")
+check("质量识别 Remux", DualVersionDownloader._quality_of("Film 2023 1080p Blu-ray REMUX"), "Remux")
+check("质量识别 WEB-DL", DualVersionDownloader._quality_of("Film 2023 1080p WEB-DL H265"), "WEB-DL")
+check("质量识别 HDTV", DualVersionDownloader._quality_of("Film 2023 1080p HDTV x264"), "HDTV")
+check("编码识别 H265", DualVersionDownloader._codec_of("Film 1080p WEB-DL HEVC"), "H265")
+check("编码识别 H264", DualVersionDownloader._codec_of("Film 1080p WEB-DL x264"), "H264")
+check("编码识别 AV1", DualVersionDownloader._codec_of("Film 1080p WEB-DL AV1"), "AV1")
+check("关键词表拆分", DualVersionDownloader._words("中字, 中语 国语"), ["中字", "中语", "国语"])
+
+q_plugin = _plugin(enabled=True, quality=["WEB-DL"], video_codec=["H265"])
+q_cands = [
+    _cand("Film 2023 1080p BluRay x265"),
+    _cand("Film 2023 1080p WEB-DL H265"),
+    _cand("Film 2023 1080p WEB-DL x264"),
+]
+check("质量+编码筛选", [c.torrent_info.title for c in q_plugin._filter_candidates(q_cands)],
+      ["Film 2023 1080p WEB-DL H265"])
+
+kw_plugin = _plugin(enabled=True, require_words="中字,中语")
+kw_cands = [
+    _cand("Film 2023 1080p WEB-DL 中字"),
+    _cand("Film 2023 1080p WEB-DL 中字 中语"),
+    _cand("Film 2023 1080p WEB-DL 中语"),
+]
+check("必须全部命中", [c.torrent_info.title for c in kw_plugin._filter_candidates(kw_cands)],
+      ["Film 2023 1080p WEB-DL 中字 中语"])
+
+any_plugin = _plugin(enabled=True, any_words="中字,国语")
+check("任选其一命中", [c.torrent_info.title for c in any_plugin._filter_candidates(kw_cands)],
+      ["Film 2023 1080p WEB-DL 中字", "Film 2023 1080p WEB-DL 中字 中语"])
+
+size_plugin = _plugin(enabled=True, min_size_gb=5)
+size_cands = [_cand("Film A 1080p WEB-DL", size_gb=2.0), _cand("Film B 1080p WEB-DL", size_gb=8.0)]
+check("体积下限生效", [c.torrent_info.title for c in size_plugin._filter_candidates(size_cands)],
+      ["Film B 1080p WEB-DL"])
+
+check("站点列转 int", DualVersionDownloader._as_site_ids([13, "26", {"value": 39}, "x"]), [13, 26, 39])
+check("站点逗号串", DualVersionDownloader._as_site_ids("13, 26"), [13, 26])
+check("站点空值", DualVersionDownloader._as_site_ids(None), [])
+check("站点去重", DualVersionDownloader._as_site_ids([13, 13, "13"]), [13])
+
+lib_plugin = _plugin(enabled=True, library_enabled=True, library_names=["外语电影"], library_limit=2)
+lib_plugin._emby_libraries = lambda: [{"Name": "外语电影", "ItemId": "5693"}]
+lib_plugin._emby_movies = lambda pid: [
+    {"Name": "阿凡达", "ProductionYear": 2009, "ProviderIds": {"Tmdb": "19995"},
+     "Path": "/影视/电影/外语电影/阿凡达 [tmdbid-19995]/阿凡达.2009.UHD.2160p.strm"},
+    {"Name": "只有1080", "ProductionYear": 2020, "ProviderIds": {"Tmdb": "111"},
+     "Path": "/影视/电影/外语电影/只有1080 [tmdbid-111]/只有1080.2020.1080p.strm"},
+    {"Name": "双版本", "ProductionYear": 2010, "ProviderIds": {"Tmdb": "222"},
+     "Path": "/影视/电影/外语电影/双版本 [tmdbid-222]/双版本.2160p.strm"},
+    {"Name": "双版本", "ProductionYear": 2010, "ProviderIds": {"Tmdb": "222"},
+     "Path": "/影视/电影/外语电影/双版本 [tmdbid-222]/双版本.1080p.strm"},
+    {"Name": "无标识", "ProductionYear": 2018, "ProviderIds": {},
+     "Path": "/影视/电影/外语电影/无标识/无标识.2160p.strm"},
+]
+lib_groups = lib_plugin._collect_library_movies()
+check("库扫描 4K 无 1080 命中", lib_groups["tmdb:19995"]["has4k"], True)
+check("库扫描 4K 无 1080 未标记 1080", lib_groups["tmdb:19995"]["has1080"], False)
+check("库扫描 1080 不算 4K", lib_groups["tmdb:111"]["has4k"], False)
+check("库扫描 双版本归并", (lib_groups["tmdb:222"]["has4k"], lib_groups["tmdb:222"]["has1080"]), (True, True))
+check("库扫描 无 TMDB 用目录归并", any(k.startswith("dir:") for k in lib_groups), True)
+
+lib_plugin._library_history = {"tmdb:19995": datetime.now().isoformat(timespec="seconds")}
+check("库补齐冷却命中", lib_plugin._library_in_cooldown("tmdb:19995"), True)
+check("库补齐冷却未命中", lib_plugin._library_in_cooldown("tmdb:111"), False)
+
+path_plugin = _plugin(enabled=True)
+path_plugin.systemconfig = types.SimpleNamespace(get=lambda key, *a, **k: [
+    {"download_path": "/其他/", "library_path": "/影视/电影/字幕/", "monitor_type": "downloader"},
+    {"download_path": "/视频/qb/电影/", "library_path": "/影视/电影/", "monitor_type": "downloader"},
+])
+check("自动推断电影下载目录", path_plugin._resolve_library_save_path(), "/视频/qb/电影/")
+check("配置优先于自动推断",
+      _plugin(enabled=True, library_save_path="/自定义/")._resolve_library_save_path(), "/自定义/")
+
+form_plugin = _plugin(enabled=True)
+_, form_defaults = form_plugin.get_form()
+check("默认配置含媒体库补齐开关", "library_enabled" in form_defaults, True)
+check("默认站点为多选列表", form_defaults.get("sites"), [])
+check("默认筛选字段齐全",
+      all(k in form_defaults for k in ("quality", "video_codec", "require_words", "any_words", "min_size_gb")), True)
 
 # ---------------------------------------------------------------- 结果
 passed = sum(1 for _, ok in results if ok)
