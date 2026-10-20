@@ -35,7 +35,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.4.1"
+    plugin_version = "1.4.2"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -703,7 +703,6 @@ class DualVersionDownloader(_PluginBase):
         save_path = self._resolve_library_save_path()
 
         if self._dry_run:
-            self._library_mark(key)
             logger.info(
                 f"双版本补全[预演·库补齐]：{head} 将补下 {best_title}"
                 f"（{site_name}，{size_gb}GB，目录 {save_path or '默认'}）"
