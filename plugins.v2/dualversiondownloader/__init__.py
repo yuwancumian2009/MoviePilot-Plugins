@@ -78,7 +78,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.7.5"
+    plugin_version = "1.7.6"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -92,7 +92,7 @@ class DualVersionDownloader(_PluginBase):
     auth_level = 1
 
     # 手动全量扫描时，「刚补下」多久内不再重复补（小时）
-    _LIBRARY_INFLIGHT_HOURS = 12
+    _DEFAULT_INFLIGHT_HOURS = 12
 
     # 4K / 1080p 判定
     _RE_4K = re.compile(r"(?i)(\b4k\b|2160[pi]|x2160|\buhd\b)")
@@ -149,6 +149,7 @@ class DualVersionDownloader(_PluginBase):
         self._library_cooldown_days: int = 30
         self._library_history: Dict[str, str] = {}
         self._library_missed: Dict[str, str] = {}
+        self._inflight_hours: float = self._DEFAULT_INFLIGHT_HOURS
         self._scan_running: bool = False
         self._scan_limit_override: Optional[int] = None
         self._scan_ignore_cooldown: bool = False
@@ -234,6 +235,10 @@ class DualVersionDownloader(_PluginBase):
         self._library_history = lib_history if isinstance(lib_history, dict) else {}
         miss_history = self.get_data("library_missed")
         self._library_missed = miss_history if isinstance(miss_history, dict) else {}
+        try:
+            self._inflight_hours = float(self._config.get("inflight_hours", self._DEFAULT_INFLIGHT_HOURS) or 0)
+        except (TypeError, ValueError):
+            self._inflight_hours = self._DEFAULT_INFLIGHT_HOURS
         lib_hashes = self.get_data("library_hashes")
         self._library_hashes = lib_hashes if isinstance(lib_hashes, dict) else {}
         self._prune_history()
@@ -779,12 +784,14 @@ class DualVersionDownloader(_PluginBase):
             self.save_data("library_missed", self._library_missed)
 
     def _library_in_flight(self, key: str) -> bool:
-        """最近 12 小时内补下过、但库里还没出现 1080p —— 视为在下载/入库途中。"""
+        """补下后一段时间内、库里还没出现 1080p —— 视为在下载/入库途中（窗口可配，0=不保护）。"""
+        if self._inflight_hours <= 0:
+            return False
         last = (self._library_history or {}).get(key)
         if not last:
             return False
         try:
-            return datetime.now() - datetime.fromisoformat(last) < timedelta(hours=self._LIBRARY_INFLIGHT_HOURS)
+            return datetime.now() - datetime.fromisoformat(last) < timedelta(hours=self._inflight_hours)
         except ValueError:
             return False
 
@@ -967,7 +974,7 @@ class DualVersionDownloader(_PluginBase):
             if in_flight:
                 logger.info(
                     f"双版本补全：另有 {in_flight} 部刚补下、仍在下载或等待入库，"
-                    f"本轮跳过（超过 {self._LIBRARY_INFLIGHT_HOURS} 小时仍缺 1080p 会自动重试）"
+                    f"本轮跳过（超过 {self._inflight_hours:g} 小时仍缺 1080p 会自动重试）"
                 )
             if skipped_cooldown:
                 logger.info(
@@ -1502,6 +1509,16 @@ class DualVersionDownloader(_PluginBase):
                     {
                         "component": "VRow",
                         "content": [
+                            self._col_text(
+                                "inflight_hours",
+                                "补下后多少小时内不重复补(小时，0=每次手动扫描都重试)",
+                                "12",
+                            ),
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 6},
@@ -1702,6 +1719,7 @@ class DualVersionDownloader(_PluginBase):
             "require_words": "",
             "any_words": "",
             "exclude_words": "CAM,TS,枪版,TC",
+            "inflight_hours": 12,
             "library_enabled": False,
             "library_cron": "0 4 * * *",
             "library_names": [],
