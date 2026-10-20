@@ -71,8 +71,8 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.2.2"
-    version = "1.2.2"
+    plugin_version = "1.2.3"
+    version = "1.2.3"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -678,7 +678,8 @@ class DualVersionDownloader(_PluginBase):
                 return
 
             targets = self._target_episodes(context)
-            media_key = self._media_key(mediainfo, targets)
+            season = self._season_of(context)
+            media_key = self._media_key(mediainfo, targets, season)
             if not media_key:
                 logger.debug(f"双版本补全：无法生成媒体键（{getattr(mediainfo, 'title', '')}），跳过")
                 return
@@ -719,7 +720,12 @@ class DualVersionDownloader(_PluginBase):
         username = data.get("username")
         title = f"{getattr(mediainfo, 'title', '') or ''} ({getattr(mediainfo, 'year', '') or ''})"
         targets = self._target_episodes(context)
-        episode_hint = f" S{getattr(mediainfo, 'season_id', '') or ''}" if targets else ""
+        season = self._season_of(context)
+        if targets:
+            ep_text = ",".join(str(x) for x in sorted(targets))
+            episode_hint = f" S{season:02d}E{ep_text}" if season else f" E{ep_text}"
+        else:
+            episode_hint = f" S{season}" if season else ""
         try:
             save_path = self._resolve_save_path(download_hash, downloader)
             candidates = self._search_candidates(mediainfo, targets)
@@ -877,7 +883,36 @@ class DualVersionDownloader(_PluginBase):
         return None
 
     @staticmethod
-    def _media_key(mediainfo: Any, targets: Optional[Set[int]] = None) -> Optional[str]:
+    @staticmethod
+    def _season_of(context: Any) -> Optional[int]:
+        """剧集：推断本次下载的季号（MediaInfo 无 season_id，回退 MetaInfo.season_list / seasons 键）。"""
+        mediainfo = getattr(context, "media_info", None)
+        meta = getattr(context, "meta_info", None)
+        for value in (getattr(mediainfo, "season_id", None),):
+            try:
+                if value:
+                    return int(value)
+            except (TypeError, ValueError):
+                pass
+        for value in getattr(meta, "season_list", None) or []:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        seasons = getattr(mediainfo, "seasons", None) or {}
+        if isinstance(seasons, dict):
+            keys: List[int] = []
+            for key in seasons.keys():
+                try:
+                    keys.append(int(key))
+                except (TypeError, ValueError):
+                    continue
+            if len(keys) == 1:
+                return keys[0]
+        return None
+
+    @staticmethod
+    def _media_key(mediainfo: Any, targets: Optional[Set[int]] = None, season: Optional[int] = None) -> Optional[str]:
         source = getattr(mediainfo, "media_source", None)
         media_id = getattr(mediainfo, "media_id", None)
         if source and media_id:
@@ -887,8 +922,8 @@ class DualVersionDownloader(_PluginBase):
             if not tmdb_id:
                 return None
             base = f"tmdb:{tmdb_id}"
-        season = getattr(mediainfo, "season_id", None)
-        if targets and season:
+        season = season if season else getattr(mediainfo, "season_id", None)
+        if season:
             return f"{base}:S{season}"
         return base
 
