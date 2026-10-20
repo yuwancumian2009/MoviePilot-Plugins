@@ -71,8 +71,8 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.2.3"
-    version = "1.2.3"
+    plugin_version = "1.2.4"
+    version = "1.2.4"
     # 插件作者
     plugin_author = "yuwancumian"
     # 作者主页
@@ -722,13 +722,13 @@ class DualVersionDownloader(_PluginBase):
         targets = self._target_episodes(context)
         season = self._season_of(context)
         if targets:
-            ep_text = ",".join(str(x) for x in sorted(targets))
+            ep_text = ",".join(f"{x:02d}" for x in sorted(targets))
             episode_hint = f" S{season:02d}E{ep_text}" if season else f" E{ep_text}"
         else:
             episode_hint = f" S{season}" if season else ""
         try:
             save_path = self._resolve_save_path(download_hash, downloader)
-            candidates = self._search_candidates(mediainfo, targets)
+            candidates = self._search_candidates(mediainfo, targets, season)
             if not candidates:
                 logger.info(f"双版本补全：{title}{episode_hint} 未找到可用的 {self._target_pix} 候选")
                 self._notify(f"{title}{episode_hint} 未找到可用的 {self._target_pix} 版本", ok=False)
@@ -772,7 +772,8 @@ class DualVersionDownloader(_PluginBase):
                 self._history[media_key] = datetime.now().isoformat(timespec="seconds")
                 self._save_state()
 
-    def _search_candidates(self, mediainfo: Any, targets: Optional[Set[int]] = None) -> List[Any]:
+    def _search_candidates(self, mediainfo: Any, targets: Optional[Set[int]] = None,
+                           season: Optional[int] = None) -> List[Any]:
         """按媒体身份搜索，过滤出目标分辨率的候选并排序。"""
         sites = None
         if self._sites:
@@ -783,9 +784,10 @@ class DualVersionDownloader(_PluginBase):
 
         contexts = SearchChain().process(mediainfo=mediainfo, sites=sites) or []
         logger.info(f"双版本补全：搜索到 {len(contexts)} 个候选资源")
-        return self._filter_candidates(contexts, targets)
+        return self._filter_candidates(contexts, targets, season)
 
-    def _filter_candidates(self, contexts: List[Any], targets: Optional[Set[int]] = None) -> List[Any]:
+    def _filter_candidates(self, contexts: List[Any], targets: Optional[Set[int]] = None,
+                           season: Optional[int] = None) -> List[Any]:
         """从搜索结果里挑出目标分辨率的候选并排序（纯函数，便于自测）。"""
         excludes = [w.strip().lower() for w in re.split(r"[,\s]+", self._exclude_words) if w.strip()]
         picked: List[Any] = []
@@ -799,6 +801,10 @@ class DualVersionDownloader(_PluginBase):
                 continue
             if any(word in text.lower() for word in excludes):
                 continue
+            if targets and season:
+                cand_season = self._season_of_item(item)
+                if cand_season is not None and cand_season != season:
+                    continue
             if targets and not self._covers_episodes(item, targets):
                 continue
             size = getattr(torrent, "size", 0) or 0
@@ -815,6 +821,28 @@ class DualVersionDownloader(_PluginBase):
             picked.sort(key=lambda c: (-(getattr(c.torrent_info, "seeders", 0) or 0),
                                        getattr(c.torrent_info, "size", 0) or 0))
         return picked
+
+    @staticmethod
+    def _season_of_item(item: Any) -> Optional[int]:
+        """候选资源所属季：优先 MetaInfo.season_list，其次从种子标题里解析 Sxx。"""
+        meta = getattr(item, "meta_info", None)
+        for value in getattr(meta, "season_list", None) or []:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        torrent = getattr(item, "torrent_info", None)
+        text = " ".join(str(x) for x in (
+            getattr(torrent, "title", "") or "",
+            getattr(meta, "org_string", "") or "",
+        ) if x)
+        match = re.search(r"(?i)(?:^|[^a-z0-9])s(\d{1,2})(?:e\d{1,3})?(?:[^a-z0-9]|$)", text)
+        if match:
+            try:
+                return int(match.group(1))
+            except ValueError:
+                return None
+        return None
 
     @staticmethod
     def _covers_episodes(item: Any, targets: Set[int]) -> bool:
