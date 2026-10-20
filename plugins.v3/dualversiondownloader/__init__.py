@@ -103,6 +103,7 @@ class DualVersionDownloader(_PluginBase):
         self._library_cooldown_days: int = 30
         self._library_history: Dict[str, str] = {}
         self._scan_running: bool = False
+        self._last_filter_stats: Dict[str, Any] = {}
         self._scan_lock = threading.Lock()
         self._http_client: Optional[Any] = None
         self._category_names: Dict[str, str] = {}
@@ -896,7 +897,19 @@ class DualVersionDownloader(_PluginBase):
             return "fail", f"{head}：搜索出错（{err}）"
         if not candidates:
             self._library_mark(key)
-            return "miss", f"{head}：未找到符合规则的 {self._target_pix}"
+            stats = self._last_filter_stats or {}
+            if stats.get("pix_ok"):
+                why = (
+                    f"搜索到 {stats.get('total', 0)} 个候选，其中 {stats['pix_ok']} 个是 "
+                    f"{self._target_pix}，但都被筛选规则滤掉（{stats.get('reason') or '规则不符'}）"
+                )
+                example = "；".join(stats.get("examples") or [])
+                if example:
+                    why += f"，例如：{example}"
+                logger.info(f"双版本补全[库补齐]：{head} {why}")
+                return "miss", f"{head}：{why}"
+            self._library_mark(key)
+            return "miss", f"{head}：站点没有 {self._target_pix} 资源（共 {stats.get('total', 0)} 个候选）"
 
         best = candidates[0]
         torrent = getattr(best, "torrent_info", None)
@@ -967,6 +980,12 @@ class DualVersionDownloader(_PluginBase):
         library_items = self._library_options()
         server_items = self._server_options()
         last_text = self._library_status_text()
+        _req = self._words(self._require_words)
+        if len(_req) > 1:
+            last_text += (
+                f"｜⚠️「必须包含关键词」要求全部命中（当前 {'、'.join(_req)}），绝大多数标题不会同时出现，"
+                "建议改用「任选关键词」"
+            )
         return [
             {
                 "component": "VForm",
@@ -1815,6 +1834,7 @@ class DualVersionDownloader(_PluginBase):
         requires = self._words(self._require_words)
         anys = self._words(self._any_words)
         picked: List[Any] = []
+        stats = {"total": len(contexts), "pix_ok": 0, "rejected": 0, "reason": "", "examples": []}
         for item in contexts:
             torrent = getattr(item, "torrent_info", None)
             meta = getattr(item, "meta_info", None)
@@ -1823,27 +1843,37 @@ class DualVersionDownloader(_PluginBase):
             text = self._pix_text(torrent, meta)
             if self._RE_4K.search(text) or not self._RE_1080.search(text):
                 continue
+            stats["pix_ok"] += 1
             lowered = text.lower()
+            title = getattr(torrent, "title", "") or ""
+            reason = ""
             if any(word in lowered for word in excludes):
-                continue
+                reason = "命中排除词"
             # 必须包含（全部命中，等价订阅规则的「包含」多关键词）
-            if requires and not all(word in lowered for word in requires):
-                continue
+            elif requires and not all(word in lowered for word in requires):
+                reason = "未同时包含：" + "、".join(requires)
             # 任选其一（命中任一，等价订阅规则的多选项「包含」）
-            if anys and not any(word in lowered for word in anys):
-                continue
-            if self._quality and self._quality_of(text) not in self._quality:
-                continue
-            if self._codec and self._codec_of(text) not in self._codec:
-                continue
-            size = getattr(torrent, "size", 0) or 0
-            if self._max_size_gb > 0 and size > self._max_size_gb * 1024 ** 3:
-                continue
-            if self._min_size_gb > 0 and size < self._min_size_gb * 1024 ** 3:
-                continue
-            if self._min_seeders > 0 and (getattr(torrent, "seeders", 0) or 0) < self._min_seeders:
+            elif anys and not any(word in lowered for word in anys):
+                reason = "未命中任一：" + "、".join(anys)
+            elif self._quality and self._quality_of(text) not in self._quality:
+                reason = "质量不符"
+            elif self._codec and self._codec_of(text) not in self._codec:
+                reason = "编码不符"
+            elif self._max_size_gb > 0 and (getattr(torrent, "size", 0) or 0) > self._max_size_gb * 1024 ** 3:
+                reason = "超过最大体积"
+            elif self._min_size_gb > 0 and (getattr(torrent, "size", 0) or 0) < self._min_size_gb * 1024 ** 3:
+                reason = "低于最小体积"
+            elif self._min_seeders > 0 and (getattr(torrent, "seeders", 0) or 0) < self._min_seeders:
+                reason = "做种数不足"
+            if reason:
+                stats["rejected"] += 1
+                if not stats["reason"]:
+                    stats["reason"] = reason
+                if len(stats["examples"]) < 3 and title:
+                    stats["examples"].append(title)
                 continue
             picked.append(item)
+        self._last_filter_stats = stats
 
         if self._prefer == "size":
             picked.sort(key=lambda c: (getattr(c.torrent_info, "size", 0) or 0,

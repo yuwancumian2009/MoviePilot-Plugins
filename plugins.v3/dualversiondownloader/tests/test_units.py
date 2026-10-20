@@ -376,6 +376,15 @@ done_plugin._update_scan_progress(
 )
 check("done 阶段=空闲", done_plugin._scan_is_running(), False)
 
+# 筛选统计：能区分「站点没有 1080p」和「被规则滤掉」（v1.5.0）
+fs = _plugin(enabled=True, require_words="国语,中字")
+picked = fs._filter_candidates([_cand("Movie 2024 1080p WEB-DL H264 AAC-GRP")])
+check("必须包含多词时全滤", len(picked), 0)
+check("统计记录 1080p 候选数", fs._last_filter_stats.get("pix_ok"), 1)
+check("统计给出原因", "国语" in str(fs._last_filter_stats.get("reason")), True)
+fa = _plugin(enabled=True, any_words="国语,中字")
+check("任选关键词可放行", len(fa._filter_candidates([_cand("Movie 2024 1080p WEB-DL 中字 H264")])), 1)
+
 # ---------------------------------------------------------------- 结果
 passed = sum(1 for _, ok in results if ok)
 print(f"\n共 {len(results)} 项，通过 {passed} 项，失败 {len(results) - passed} 项")
