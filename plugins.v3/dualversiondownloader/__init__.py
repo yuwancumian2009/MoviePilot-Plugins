@@ -104,6 +104,8 @@ class DualVersionDownloader(_PluginBase):
         self._library_history: Dict[str, str] = {}
         self._scan_running: bool = False
         self._last_filter_stats: Dict[str, Any] = {}
+        self._relaxed_used: bool = False
+        self._strict_reason: str = ""
         self._scan_lock = threading.Lock()
         self._http_client: Optional[Any] = None
         self._category_names: Dict[str, str] = {}
@@ -937,11 +939,12 @@ class DualVersionDownloader(_PluginBase):
         if not download_hash:
             return "fail", f"{head}：下载器未接受任务（{best_title}）"
         self._library_mark(key)
+        relaxed_note = f"，严格规则未命中（{self._strict_reason}）已放宽" if self._relaxed_used else ""
         logger.info(
             f"双版本补全[库补齐]：{head} 已补下 {best_title}"
-            f"（{site_name}，{size_gb}GB，目录 {save_path or '默认'}，hash={download_hash}）"
+            f"（{site_name}，{size_gb}GB，目录 {save_path or '默认'}，hash={download_hash}{relaxed_note}）"
         )
-        return "ok", f"{head}：已补下 {best_title}（{size_gb}GB）"
+        return "ok", f"{head}：已补下 {best_title}（{size_gb}GB{relaxed_note}）"
 
     @staticmethod
     def _as_site_ids(raw: Any) -> List[int]:
@@ -1826,13 +1829,29 @@ class DualVersionDownloader(_PluginBase):
 
         contexts = SearchChain().process(mediainfo=mediainfo, sites=sites) or []
         logger.info(f"双版本补全：搜索到 {len(contexts)} 个候选资源")
-        return self._filter_candidates(contexts)
+        picked = self._filter_candidates(contexts)
+        self._relaxed_used = False
+        if not picked and (self._last_filter_stats or {}).get("pix_ok"):
+            # 严格规则一条都不剩时自动放宽关键词，按「确实有 1080p 就补下」处理
+            self._strict_reason = (self._last_filter_stats or {}).get("reason") or "关键词不符"
+            picked = self._filter_candidates(contexts, strict_words=False)
+            if picked:
+                self._relaxed_used = True
+                logger.info(
+                    f"双版本补全：严格匹配 0 条（{(self._last_filter_stats or {}).get('reason')}），"
+                    f"已放宽关键词规则，命中 {len(picked)} 条"
+                )
+        return picked
 
-    def _filter_candidates(self, contexts: List[Any]) -> List[Any]:
-        """从搜索结果里挑出目标分辨率的候选并排序（纯函数，便于自测）。"""
+    def _filter_candidates(self, contexts: List[Any], strict_words: bool = True) -> List[Any]:
+        """从搜索结果里挑出目标分辨率的候选并排序（纯函数，便于自测）。
+
+        strict_words=False 表示宽松兜底：忽略「必须包含 / 任选关键词」，其余规则照旧。
+        关键词在「标题 + 副标题 + MP 解析字段」里匹配，和 MP 订阅规则的口径一致。
+        """
         excludes = self._words(self._exclude_words)
-        requires = self._words(self._require_words)
-        anys = self._words(self._any_words)
+        requires = self._words(self._require_words) if strict_words else []
+        anys = self._words(self._any_words) if strict_words else []
         picked: List[Any] = []
         stats = {"total": len(contexts), "pix_ok": 0, "rejected": 0, "reason": "", "examples": []}
         for item in contexts:
@@ -1844,16 +1863,16 @@ class DualVersionDownloader(_PluginBase):
             if self._RE_4K.search(text) or not self._RE_1080.search(text):
                 continue
             stats["pix_ok"] += 1
-            lowered = text.lower()
+            kw_text = self._keyword_text(torrent, meta).lower()
             title = getattr(torrent, "title", "") or ""
             reason = ""
-            if any(word in lowered for word in excludes):
+            if excludes and any(word in kw_text for word in excludes):
                 reason = "命中排除词"
             # 必须包含（全部命中，等价订阅规则的「包含」多关键词）
-            elif requires and not all(word in lowered for word in requires):
+            elif requires and not all(word in kw_text for word in requires):
                 reason = "未同时包含：" + "、".join(requires)
             # 任选其一（命中任一，等价订阅规则的多选项「包含」）
-            elif anys and not any(word in lowered for word in anys):
+            elif anys and not any(word in kw_text for word in anys):
                 reason = "未命中任一：" + "、".join(anys)
             elif self._quality and self._quality_of(text) not in self._quality:
                 reason = "质量不符"
@@ -1906,11 +1925,31 @@ class DualVersionDownloader(_PluginBase):
 
     @staticmethod
     def _pix_text(torrent: Any, meta: Any) -> str:
+        """分辨率/质量/编码判定用文本（只看标题与解析结果，避免副标题里的年份/规格干扰）。"""
         return " ".join(
             str(x) for x in (
                 getattr(torrent, "title", "") or "",
                 getattr(meta, "resource_pix", "") or "",
                 getattr(meta, "org_string", "") or "",
+            ) if x
+        )
+
+    @classmethod
+    def _keyword_text(cls, torrent: Any, meta: Any) -> str:
+        """关键词匹配用文本：标题 + 副标题 + MP 解析出的编码/音频/制作组/版本等。
+
+        与 MP 自带订阅规则的匹配口径一致——「国语」「中字」这类信息大多写在副标题或
+        解析字段里，标题里往往没有，只看标题会把可用资源全部滤掉。
+        """
+        return " ".join(
+            str(x) for x in (
+                cls._pix_text(torrent, meta),
+                getattr(torrent, "description", "") or "",
+                getattr(meta, "video_encode", "") or "",
+                getattr(meta, "audio_encode", "") or "",
+                getattr(meta, "resource_team", "") or "",
+                getattr(meta, "edition", "") or "",
+                getattr(meta, "web_source", "") or "",
             ) if x
         )
 

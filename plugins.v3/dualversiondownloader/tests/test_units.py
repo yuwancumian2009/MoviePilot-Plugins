@@ -385,6 +385,21 @@ check("统计给出原因", "国语" in str(fs._last_filter_stats.get("reason"))
 fa = _plugin(enabled=True, any_words="国语,中字")
 check("任选关键词可放行", len(fa._filter_candidates([_cand("Movie 2024 1080p WEB-DL 中字 H264")])), 1)
 
+# 关键词匹配口径 + 宽松兜底（v1.5.0）
+kw = _plugin(enabled=True, require_words="国语,中字")
+cj = _cand("Movie 2023 1080p WEB-DL H264-GRP")
+cj.torrent_info.description = "国语中字 / 简繁字幕"
+check("副标题里的国语中字能命中", len(kw._filter_candidates([cj])), 1)
+
+strict_zero = _plugin(enabled=True, require_words="国语,中字,粤语")
+c2 = _cand("Movie 2023 1080p WEB-DL H264-GRP")
+check("严格规则全滤", len(strict_zero._filter_candidates([c2])), 0)
+check("宽松兜底放行", len(strict_zero._filter_candidates([c2], strict_words=False)), 1)
+
+ex_plugin = _plugin(enabled=True, exclude_words="CAM", require_words="国语,中字")
+c3 = _cand("Movie 2023 1080p CAM-GRP")
+check("宽松兜底仍尊重排除词", len(ex_plugin._filter_candidates([c3], strict_words=False)), 0)
+
 # ---------------------------------------------------------------- 结果
 passed = sum(1 for _, ok in results if ok)
 print(f"\n共 {len(results)} 项，通过 {passed} 项，失败 {len(results) - passed} 项")
