@@ -78,7 +78,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.7.0"
+    plugin_version = "1.7.1"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"

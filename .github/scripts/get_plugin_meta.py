@@ -219,6 +219,27 @@ def handle_push() -> List[Dict]:
     return plugins_to_release
 
 
+def dedupe_by_release_tag(plugins: List[Dict]) -> List[Dict]:
+    """同一插件同时存在于 plugins.v2 与 plugins.v3 时只发布一次。
+
+    两代的源码内容完全一致（同一份文件），tag/资产名也相同，
+    重复进矩阵会在第二个任务里撞上「Release 已存在」而整条流水线变红。
+    这里按 tag_name 去重，并优先保留 v3 目录的条目。
+    """
+    picked: Dict[str, Dict] = {}
+    for item in plugins:
+        tag = item.get("tag_name")
+        if not tag:
+            continue
+        current = picked.get(tag)
+        if current is None or item.get("backend_worker_path") == "plugins.v3":
+            if current is not None:
+                log(f"[Info] {tag} 同时存在于 {current.get('backend_worker_path')} 与 "
+                    f"{item.get('backend_worker_path')}，按 v3 优先只发布一次。")
+            picked[tag] = item
+    return list(picked.values())
+
+
 def log(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
@@ -233,5 +254,7 @@ if __name__ == "__main__":
     else:
         log(f"[Error] 不支持的事件类型: {event_name}")
         sys.exit(1)
+
+    final_plugins = dedupe_by_release_tag(final_plugins)
 
     print(json.dumps(final_plugins))
