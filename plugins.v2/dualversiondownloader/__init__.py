@@ -78,7 +78,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.7.2"
+    plugin_version = "1.7.3"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -150,6 +150,7 @@ class DualVersionDownloader(_PluginBase):
         self._scan_ignore_cooldown: bool = False
         self._refresh_media: bool = True
         self._library_hashes: Dict[str, str] = {}
+        self._refresh_scheduled_at: float = 0.0
         self._last_filter_stats: Dict[str, Any] = {}
         self._relaxed_used: bool = False
         self._strict_reason: str = ""
@@ -805,9 +806,18 @@ class DualVersionDownloader(_PluginBase):
         最后一步不会自己发生，必须调一次媒体库刷新，新版本才会出现在库中。
         """
 
+        now = time.time()
+        with self._lock:
+            if now - self._refresh_scheduled_at < 600:
+                return
+            self._refresh_scheduled_at = now
+
         def _worker() -> None:
             time.sleep(max(10, int(delay)))
             self._refresh_emby_libraries(reason=reason)
+            # strm 工具生成 .strm 有延迟，第一次刷新可能还看不到，5 分钟后再补一次
+            time.sleep(300)
+            self._refresh_emby_libraries(reason=f"{reason}(二次)")
 
         threading.Thread(target=_worker, name="DualVersionRefresh", daemon=True).start()
 
