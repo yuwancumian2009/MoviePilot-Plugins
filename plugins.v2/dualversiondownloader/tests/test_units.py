@@ -486,6 +486,24 @@ check("未命中的仍进冷却（定时扫描不反复撞站）", _p2._library_
 _old = (datetime.now() - timedelta(hours=13)).isoformat(timespec="seconds")
 _p2._library_history = {"tmdb:3": _old}
 check("补下超过 12 小时仍未入库 → 不算在途，会重试", _p2._library_in_flight("tmdb:3"), False)
+# 未命中必须清掉旧的「在途」账，否则以前补下失败过的片子会被永远跳过（2026-10-20 线上踩坑）
+_p4 = _plugin(enabled=True, library_enabled=True, library_names=["动画电影"], library_cooldown_days=0, inflight_hours=12)
+_recent = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
+_p4._library_history = {"tmdb:9": _recent}
+check("刚补下的算在途", _p4._library_in_flight("tmdb:9"), True)
+_p4._library_mark_miss("tmdb:9")
+check("记未命中后立刻不再算在途", _p4._library_in_flight("tmdb:9"), False)
+check("记未命中会从在途账里移除", "tmdb:9" in (_p4._library_history or {}), False)
+# 老版本遗留数据：history 与 missed 同时存在，且 missed 更新 → 不算在途
+_p5 = _plugin(enabled=True, library_enabled=True, library_names=["动画电影"], library_cooldown_days=0, inflight_hours=12)
+_p5._library_history = {"tmdb:11": _recent}
+_p5._library_missed = {"tmdb:11": (datetime.now() - timedelta(minutes=5)).isoformat(timespec="seconds")}
+check("历史遗留(history+更新的missed)不算在途", _p5._library_in_flight("tmdb:11"), False)
+_p5._library_missed = {"tmdb:11": (datetime.now() - timedelta(hours=3)).isoformat(timespec="seconds")}
+check("missed 更旧则仍按在途保护", _p5._library_in_flight("tmdb:11"), True)
+
+check("未命中另有账（用于冷却）", "tmdb:9" in (_p4._library_missed or {}), True)
+
 check("扫描结果里带 in_flight 字段（页面能显示）", "in_flight" in (ROOT / "__init__.py").read_text(encoding="utf-8"), True)
 
 # ------------------------------------------------- 排除词必须按词边界匹配
