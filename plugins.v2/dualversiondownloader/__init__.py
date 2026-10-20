@@ -78,7 +78,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.7.6"
+    plugin_version = "1.7.7"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -779,8 +779,11 @@ class DualVersionDownloader(_PluginBase):
     def _library_mark_miss(self, key: str) -> None:
         """未命中（站点没有合格资源）单独记账：不算在途，手动全量可立刻重试。"""
         with self._lock:
+            # 关键：清掉旧的「在途」记录，否则以前补下失败留下的账会让这部片一直被当成在下载中跳过
+            self._library_history.pop(key, None)
             self._library_missed[key] = datetime.now().isoformat(timespec="seconds")
             self._prune_library_history()
+            self.save_data("library_history", self._library_history)
             self.save_data("library_missed", self._library_missed)
 
     def _library_in_flight(self, key: str) -> bool:
