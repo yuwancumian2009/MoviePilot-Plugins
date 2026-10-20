@@ -73,7 +73,17 @@
 - 全站搜索（40+ 站点）单次约 1~3 分钟，插件在后台线程里跑，不阻塞下载流程；
 - 4K + 1080p 双份会占双倍空间，按需用「最大体积」控制 1080p 一份的大小；
 - **仅电影**：v1.3.0 起移除剧集支持，电视剧/动漫下载不会被处理；
-- 类别判定复用 MoviePilot 自身的媒体分类策略（分类求值），与整理后的媒体库类别一致。
+- 类别判定复用 MoviePilot 自身的媒体分类策略（分类求值），与整理后的媒体库类别一致；
+- 若用 115/夸克 等 strm 媒体库，1080p 入库后需靠 strm 生成插件（如 P115StrmHelper）补出 `.strm`，Emby 才会看到第二个版本；其默认每 12 小时全量同步一次，也可用它的 `api_strm_sync_create_by_path` 立即生成。
+
+## 实测记录（2026-10-20）
+
+| 场景 | 结果 |
+| --- | --- |
+| 媒体库扫描 | 外语电影 135 部，识别出「只有 4K」65 部 |
+| 补齐下载 | 巅峰猎杀 (2026) → 1080p 3.7GB，落 `/视频/qb/电影/外语电影` |
+| 自动整理 | 入库到 `/影视/电影/外语电影/巅峰猎杀 (2026) [tmdbid-1318447]/`，与 4K 同目录 |
+| Emby 呈现 | 同目录两个 strm（2160p + 1080p），Emby 显示两个版本 |
 
 ## 自检接口
 
@@ -85,3 +95,4 @@
 | `GET /api/v1/plugin/DualVersionDownloader/libraries` | Emby/Jellyfin 电影库清单 |
 | `GET /api/v1/plugin/DualVersionDownloader/scan` | 立即执行一次媒体库补齐扫描（后台线程） |
 | `GET /api/v1/plugin/DualVersionDownloader/scan_status` | 扫描状态与上次结果 |
+| `GET /api/v1/plugin/DualVersionDownloader/reset_history` | 清空补齐冷却记录（让已跳过的影片重新参与） |

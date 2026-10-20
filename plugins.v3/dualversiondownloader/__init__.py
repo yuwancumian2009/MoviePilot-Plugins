@@ -35,7 +35,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.4.2"
+    plugin_version = "1.4.3"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -267,6 +267,13 @@ class DualVersionDownloader(_PluginBase):
                 "summary": "查询扫描状态",
                 "description": "返回是否运行中、上次扫描结果",
             },
+            {
+                "path": "/reset_history",
+                "endpoint": self.api_reset_history,
+                "methods": ["GET", "POST"],
+                "summary": "清空补齐重试记录",
+                "description": "清空媒体库补齐的冷却记录，让已跳过的影片重新参与扫描",
+            },
         ]
 
     def api_categories(self, refresh: bool = False) -> Dict[str, Any]:
@@ -340,6 +347,15 @@ class DualVersionDownloader(_PluginBase):
             "history": len(self._library_history or {}),
             "last": self.get_data("library_last") or {},
         }
+
+    def api_reset_history(self) -> Dict[str, Any]:
+        """
+        清空媒体库补齐的重试冷却记录
+        """
+        old = len(self._library_history)
+        self._library_history = {}
+        self.save_data("library_history", {})
+        return {"cleared": old, "message": f"已清空 {old} 条补齐记录"}
 
     def _site_options(self) -> List[dict]:
         try:
