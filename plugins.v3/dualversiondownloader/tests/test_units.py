@@ -161,6 +161,9 @@ check("4K 判定 UHD", bool(plugin._RE_4K.search("Movie 2023 UHD BluRay")), True
 check("4K 判定 1080p 不命中", bool(plugin._RE_4K.search("Movie 2023 1080p BluRay")), False)
 check("1080p 判定", bool(plugin._RE_1080.search("Movie 2023 1080p BluRay")), True)
 check("1080i 不算 1080p", bool(plugin._RE_1080.search("Movie 2023 1080i HDTV")), False)
+check("库内已有 1080 版本：缺 p 的命名也算", bool(plugin._RE_1080_ANY.search("Movie.2023.1080.WEB-DL")), True)
+check("库内已有 1080 版本：1920x1080 也算", bool(plugin._RE_1080_ANY.search("Movie.2023.1920x1080.mkv")), True)
+check("库内已有 1080 版本：不误伤 10880", bool(plugin._RE_1080_ANY.search("Movie 10880")), False)
 check(
     "_pix_text 合并三段文本",
     plugin._pix_text(types.SimpleNamespace(title="A 2160p"), types.SimpleNamespace(resource_pix="B", org_string="C")),
@@ -485,22 +488,25 @@ check("未命中的不算在途（手动全量可立刻重试）", _p2._library_
 check("未命中的仍进冷却（定时扫描不反复撞站）", _p2._library_in_cooldown("tmdb:2"), True)
 _old = (datetime.now() - timedelta(hours=13)).isoformat(timespec="seconds")
 _p2._library_history = {"tmdb:3": _old}
-check("补下超过 12 小时仍未入库 → 不算在途，会重试", _p2._library_in_flight("tmdb:3"), False)
-# 未命中必须清掉旧的「在途」账，否则以前补下失败过的片子会被永远跳过（2026-10-20 线上踩坑）
+check("默认 24h 在途窗口内仍算在途（13 小时）", _p2._library_in_flight("tmdb:3"), True)
+_older = (datetime.now() - timedelta(hours=25)).isoformat(timespec="seconds")
+_p2._library_history = {"tmdb:4": _older}
+check("超过 24h 仍未入库 → 不算在途，会重试", _p2._library_in_flight("tmdb:4"), False)
+# 2026-10-21 线上踩坑：记未命中时清掉在途账 → 同一部片被下了两份 1080p；改为在途账独立保留
 _p4 = _plugin(enabled=True, library_enabled=True, library_names=["动画电影"], library_cooldown_days=0, inflight_hours=12)
 _recent = (datetime.now() - timedelta(hours=1)).isoformat(timespec="seconds")
 _p4._library_history = {"tmdb:9": _recent}
 check("刚补下的算在途", _p4._library_in_flight("tmdb:9"), True)
 _p4._library_mark_miss("tmdb:9")
-check("记未命中后立刻不再算在途", _p4._library_in_flight("tmdb:9"), False)
-check("记未命中会从在途账里移除", "tmdb:9" in (_p4._library_history or {}), False)
+check("记未命中后在途保护仍生效（防止同一部片重复补下）", _p4._library_in_flight("tmdb:9"), True)
+check("记未命中不再清掉在途账", "tmdb:9" in (_p4._library_history or {}), True)
 # 老版本遗留数据：history 与 missed 同时存在，且 missed 更新 → 不算在途
 _p5 = _plugin(enabled=True, library_enabled=True, library_names=["动画电影"], library_cooldown_days=0, inflight_hours=12)
 _p5._library_history = {"tmdb:11": _recent}
 _p5._library_missed = {"tmdb:11": (datetime.now() - timedelta(minutes=5)).isoformat(timespec="seconds")}
-check("历史遗留(history+更新的missed)不算在途", _p5._library_in_flight("tmdb:11"), False)
+check("missed 更新也不影响在途判定", _p5._library_in_flight("tmdb:11"), True)
 _p5._library_missed = {"tmdb:11": (datetime.now() - timedelta(hours=3)).isoformat(timespec="seconds")}
-check("missed 更旧则仍按在途保护", _p5._library_in_flight("tmdb:11"), True)
+check("missed 更旧仍在途", _p5._library_in_flight("tmdb:11"), True)
 
 check("未命中另有账（用于冷却）", "tmdb:9" in (_p4._library_missed or {}), True)
 
@@ -515,6 +521,33 @@ check("排除词能命中 CAM", _cls.hit_word("CAM", "movie 2026 cam xvid"), Tru
 check("排除词命中分隔符夹住的 TS", _cls.hit_word("TS", "movie.2019.TS.1080p.mkv"), True)
 check("中文关键词按子串匹配", _cls.hit_word("中字", "某某电影 简中字幕 1080p"), True)
 check("中文关键词未出现则不命中", _cls.hit_word("国语", "某某电影 简中字幕 1080p"), False)
+
+# ------------------------------------------- 补下前现查媒体库（防重复补下）
+_lib_p = _plugin(enabled=True, library_enabled=True, library_names=["动画电影"])
+_lib_p._emby_libraries = lambda: [{"Name": "动画电影", "ItemId": "1"}]
+_lib_p._library_cooldown_days = 0
+_lib_p._inflight_hours = 24
+
+
+def _mk_items(path):
+    return {"Items": [{"Path": path, "ProviderIds": {"Tmdb": "335797"}}]}
+
+
+_lib_p._media_get = lambda path, **kw: _mk_items("/strm/电影/动画电影/欢乐好声音 (2016) [tmdbid-335797]/X.1080p.x265.strm")
+check("现查库中已有 1080p → 命中", bool(_lib_p._library_now_has_target("335797", "欢乐好声音")), True)
+_lib_p._media_get = lambda path, **kw: _mk_items("/strm/电影/动画电影/欢乐好声音 (2016)/X - 2160p.strm")
+check("现查库里只有 4K → 不命中", _lib_p._library_now_has_target("335797", "欢乐好声音"), "")
+_lib_p._media_get = lambda path, **kw: {"Items": []}
+check("现查为空不误判", _lib_p._library_now_has_target("335797", "欢乐好声音"), "")
+
+# 已有 1080p 时必须在搜索之前就跳过，不能再去下载
+_lib_p._media_get = lambda path, **kw: _mk_items("/strm/电影/动画电影/欢乐好声音 (2016) [tmdbid-335797]/X.1080p.x265.strm")
+_lib_p._search_candidates = lambda *a, **k: (_ for _ in ()).throw(AssertionError("不该发起搜索"))
+_status, _msg = _lib_p._backfill_library_movie(
+    {"key": "tmdb:335797", "tmdb": "335797", "title": "欢乐好声音", "year": 2016, "has4k": True, "has1080": False}
+)
+check("库中已有 1080p 时直接跳过不下载", _status, "skip")
+check("跳过原因写明库中已有", "库中已有" in _msg, True)
 
 # ---------------------------------------------------------------- 结果
 passed = sum(1 for _, ok in results if ok)

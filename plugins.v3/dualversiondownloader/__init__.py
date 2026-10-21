@@ -78,7 +78,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.7.8"
+    plugin_version = "1.7.9"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -92,11 +92,14 @@ class DualVersionDownloader(_PluginBase):
     auth_level = 1
 
     # 手动全量扫描时，「刚补下」多久内不再重复补（小时）
-    _DEFAULT_INFLIGHT_HOURS = 12
+    # 115 上传 + strm 生成 + Emby 索引经常超过 12 小时，窗口取宽一些避免重复补下
+    _DEFAULT_INFLIGHT_HOURS = 24
 
     # 4K / 1080p 判定
     _RE_4K = re.compile(r"(?i)(\b4k\b|2160[pi]|x2160|\buhd\b)")
     _RE_1080 = re.compile(r"(?i)(1080p|x1080)")
+    # 库里「已有 1080 版本」的宽松判定：1080p / 1080i / 1920x1080 / "…1080.WEB-DL"（缺 p 的命名）
+    _RE_1080_ANY = re.compile(r"(?i)(1080[pi]?(?![0-9])|x1080)")
 
     # 候选筛选：质量 / 视频编码（按顺序优先匹配）
     _QUALITY_RULES = (
@@ -760,7 +763,7 @@ class DualVersionDownloader(_PluginBase):
                     groups[key] = group
                 if self._RE_4K.search(path):
                     group["has4k"] = True
-                if self._RE_1080.search(path):
+                if self._RE_1080_ANY.search(path):
                     group["has1080"] = True
             logger.info(f"双版本补全：媒体库「{name}」共 {count} 个电影条目")
         return groups
@@ -779,8 +782,8 @@ class DualVersionDownloader(_PluginBase):
     def _library_mark_miss(self, key: str) -> None:
         """未命中（站点没有合格资源）单独记账：不算在途，手动全量可立刻重试。"""
         with self._lock:
-            # 关键：清掉旧的「在途」记录，否则以前补下失败留下的账会让这部片一直被当成在下载中跳过
-            self._library_history.pop(key, None)
+            # 注意：不能清掉「在途」记录。补下成功后的下一轮若临时搜不到候选（站点流控/超时），
+            # 一旦清掉在途账，这部片会被当成没补过而再次下载，导致同一部影片下两份 1080p。
             self._library_missed[key] = datetime.now().isoformat(timespec="seconds")
             self._prune_library_history()
             self.save_data("library_history", self._library_history)
@@ -793,14 +796,80 @@ class DualVersionDownloader(_PluginBase):
         last = (self._library_history or {}).get(key)
         if not last:
             return False
-        # 老版本遗留：同一条既有在途记录、又有更新的未命中记录 → 以较新的一条为准，不算在途
-        miss = (self._library_missed or {}).get(key)
-        if miss and str(miss) >= str(last):
-            return False
+        # 未命中记录不再覆盖在途状态：补下过的片子在窗口内一律算在途（窗口到点自动过期重试）
         try:
             return datetime.now() - datetime.fromisoformat(last) < timedelta(hours=self._inflight_hours)
         except ValueError:
             return False
+
+    def _library_paths_now(self, tmdb_id: str, title: str = "") -> List[str]:
+        """按 TMDB 现查媒体库条目路径（绕开扫描开始时的快照）。
+
+        用于补下前的二次确认：上一轮的 1080p 可能已经入库，但 Emby 还没完成索引，
+        扫描快照里看不到，直接下载就会下重复。
+        """
+        tmdb_id = str(tmdb_id or "").strip()
+        if not tmdb_id:
+            return []
+        paths: List[str] = []
+        library_map = {
+            str(item.get("Name") or ""): str(item.get("ItemId") or item.get("Id") or "")
+            for item in self._emby_libraries()
+            if item.get("Name")
+        }
+        for name in self._library_names:
+            parent_id = library_map.get(name)
+            if not parent_id:
+                continue
+            items: List[dict] = []
+            try:
+                data = self._media_get(
+                    "Items",
+                    Recursive="true",
+                    IncludeItemTypes="Movie",
+                    ParentId=parent_id,
+                    Fields="Path,ProviderIds",
+                    AnyProviderIdEquals=f"tmdb.{tmdb_id}",
+                    Limit=50,
+                    EnableTotalRecordCount="false",
+                    ImageTypeLimit=0,
+                )
+                items = [i for i in ((data or {}).get("Items") or []) if isinstance(i, dict)]
+            except Exception as err:  # noqa: BLE001
+                logger.debug(f"双版本补全：按 TMDB 复查媒体库失败（{err}），退回标题搜索")
+            if not items and title:
+                try:
+                    data = self._media_get(
+                        "Items",
+                        Recursive="true",
+                        IncludeItemTypes="Movie",
+                        ParentId=parent_id,
+                        Fields="Path,ProviderIds",
+                        SearchTerm=title,
+                        Limit=50,
+                        EnableTotalRecordCount="false",
+                        ImageTypeLimit=0,
+                    )
+                    items = [i for i in ((data or {}).get("Items") or []) if isinstance(i, dict)]
+                except Exception as err:  # noqa: BLE001
+                    logger.debug(f"双版本补全：按标题复查媒体库失败（{err}）")
+                    continue
+            for item in items:
+                ids = item.get("ProviderIds") or {}
+                item_tmdb = str(ids.get("Tmdb") or "").strip()
+                if item_tmdb and item_tmdb != tmdb_id:
+                    continue
+                path = str(item.get("Path") or "")
+                if path:
+                    paths.append(path)
+        return paths
+
+    def _library_now_has_target(self, tmdb_id: str, title: str = "") -> str:
+        """现查库中是否已有目标分辨率条目，返回命中路径（无则空串）。"""
+        for path in self._library_paths_now(tmdb_id, title):
+            if self._RE_1080_ANY.search(path):
+                return path
+        return ""
 
     def _library_mark(self, key: str) -> None:
         with self._lock:
@@ -1089,6 +1158,15 @@ class DualVersionDownloader(_PluginBase):
         name = str(group.get("title") or tmdb_id)
         if not tmdb_id:
             return "skip", f"{name}：无 TMDB 标识，跳过"
+        # 补下前先现查一遍媒体库：扫描快照可能早于上一轮入库（Emby 索引滞后），照快照下会重复
+        early_hit = self._library_now_has_target(tmdb_id, name)
+        if early_hit:
+            self._library_mark(key)
+            logger.info(
+                f"双版本补全[库补齐]：{name} 库中已有 {self._target_pix}"
+                f"（{os.path.basename(early_hit)}），跳过"
+            )
+            return "skip", f"{name}：库中已有 {self._target_pix}（{os.path.basename(early_hit)}），跳过"
         try:
             mediainfo = recognize_movie(tmdb_id)
         except Exception as err:  # noqa: BLE001
@@ -1136,6 +1214,16 @@ class DualVersionDownloader(_PluginBase):
             )
             return "dry", f"{head}：预演命中 {best_title}（{size_gb}GB）"
 
+        # 下载前再复核一次：从搜到候选到真正提交可能已过了几分钟
+        late_hit = self._library_now_has_target(tmdb_id, name)
+        if late_hit:
+            self._library_mark(key)
+            logger.info(
+                f"双版本补全[库补齐]：{head} 提交前复核发现库中已有 {self._target_pix}"
+                f"（{os.path.basename(late_hit)}），跳过"
+            )
+            return "skip", f"{head}：库中已有 {self._target_pix}（{os.path.basename(late_hit)}），跳过"
+
         try:
             download_hash = DownloadChain().download_single(
                 context=best,
@@ -1147,6 +1235,13 @@ class DualVersionDownloader(_PluginBase):
             return "fail", f"{head}：下载提交出错（{err}）"
         if not download_hash:
             return "fail", f"{head}：下载器未接受任务（{best_title}）"
+        # MP 对已在下载器里的重复种子会直接返回旧 hash 且不算失败，这里识别出来当在途处理
+        if self._is_library_hash(str(download_hash).lower()):
+            self._library_mark(key)
+            logger.info(
+                f"双版本补全[库补齐]：{head} 下载器中已有同一任务（{best_title}），视为在途，跳过"
+            )
+            return "skip", f"{head}：下载器中已有同一任务（{best_title}），跳过"
         self._library_mark(key)
         self._remember_library_hash(download_hash, tmdb_id)
         relaxed_note = f"，严格规则未命中（{self._strict_reason}）已放宽" if self._relaxed_used else ""
@@ -1726,7 +1821,7 @@ class DualVersionDownloader(_PluginBase):
             "require_words": "",
             "any_words": "",
             "exclude_words": "CAM,TS,枪版,TC",
-            "inflight_hours": 12,
+            "inflight_hours": 24,
             "library_enabled": False,
             "library_cron": "0 4 * * *",
             "library_names": [],
