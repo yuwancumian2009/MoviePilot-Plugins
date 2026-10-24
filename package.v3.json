@@ -32,13 +32,13 @@
     "name": "搜索渠道签到",
     "description": "给各个搜索渠道（Dian115 / HDHaven / HDHive / 聚影 / 蜗牛）每天自动签到领积分，每渠道独立开关与模式，已签成功的当天自动跳过，支持通知与历史记录。",
     "labels": "站点",
-    "version": "2.0.1",
+    "version": "2.0.2",
     "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/searchchannelcheckin.png",
     "author": "yuwancumian2009",
     "level": 1,
     "release": true,
     "history": {
-      "v2.0.2": "迁移 V3 告警枚举 MessageType、浏览器/CF 适配器到 app.adapters.network，消除兼容告警。",
+      "v2.0.2": "修复 HDHaven / 聚影 / 蜗牛 渠道实例化客户端时 proxy 重复传参导致的签到失败（报错：got multiple values for keyword argument 'proxy'）。",
       "v2.0.1": "requirements 放宽为实际可安装的下限（torf>=4.3.1、curl_cffi>=0.7.0），修复 Python 3.14 环境下 torf 5.x 无可用包导致依赖恢复失败、插件无法加载。",
       "v2.0.0": "MoviePilot V3 专用分支：导入迁移到 app.sdk 稳定出口；补充 requirements.txt（torf、curl_cffi），解决 V3 精简镜像缺依赖导致插件无法加载。"
     },
