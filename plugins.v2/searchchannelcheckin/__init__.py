@@ -141,7 +141,7 @@ class SearchChannelCheckin(_PluginBase):
     plugin_name = "搜索渠道签到"
     plugin_desc = "给 Dian115 / HDHaven / HDHive / 聚影 / 蜗牛 等搜索渠道每天自动签到。"
     plugin_icon = "mdi-calendar-check-outline"
-    plugin_version = "1.0.0"
+    plugin_version = "1.0.1"
     plugin_author = "yuwancumian2009"
     author_url = "https://github.com/yuwancumian2009"
     plugin_config_prefix = "searchchannelcheckin_"
@@ -967,7 +967,6 @@ class SearchChannelCheckin(_PluginBase):
                 username=cfg["username"],
                 password=cfg["password"],
                 base_url=cfg.get("base_url") or "https://hdhaven.com",
-                proxy=proxy,
                 request_interval=2.0,
                 **common,
             )
@@ -1008,7 +1007,6 @@ class SearchChannelCheckin(_PluginBase):
                 username=cfg["username"],
                 password=cfg["password"],
                 base_url=cfg.get("base_url") or "https://www.jying.top",
-                proxy=proxy,
                 request_timeout=_as_int(cfg.get("timeout"), 60, 5, 120),
                 request_interval=1.0,
                 **common,
@@ -1020,7 +1018,6 @@ class SearchChannelCheckin(_PluginBase):
                 username=cfg["username"],
                 password=cfg["password"],
                 base_url=cfg.get("base_url") or "https://www.wn4k.com",
-                proxy=proxy,
                 request_timeout=_as_int(cfg.get("timeout"), 60, 5, 120),
                 request_interval=1.0,
                 **common,

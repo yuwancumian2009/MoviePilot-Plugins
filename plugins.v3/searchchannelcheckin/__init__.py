@@ -967,7 +967,6 @@ class SearchChannelCheckin(_PluginBase):
                 username=cfg["username"],
                 password=cfg["password"],
                 base_url=cfg.get("base_url") or "https://hdhaven.com",
-                proxy=proxy,
                 request_interval=2.0,
                 **common,
             )
@@ -1008,7 +1007,6 @@ class SearchChannelCheckin(_PluginBase):
                 username=cfg["username"],
                 password=cfg["password"],
                 base_url=cfg.get("base_url") or "https://www.jying.top",
-                proxy=proxy,
                 request_timeout=_as_int(cfg.get("timeout"), 60, 5, 120),
                 request_interval=1.0,
                 **common,
@@ -1020,7 +1018,6 @@ class SearchChannelCheckin(_PluginBase):
                 username=cfg["username"],
                 password=cfg["password"],
                 base_url=cfg.get("base_url") or "https://www.wn4k.com",
-                proxy=proxy,
                 request_timeout=_as_int(cfg.get("timeout"), 60, 5, 120),
                 request_interval=1.0,
                 **common,
