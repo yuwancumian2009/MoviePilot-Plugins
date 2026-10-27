@@ -347,6 +347,40 @@ class HDHavenClient:
         }
 
     def checkin(self, mode: str = "normal") -> Dict[str, Any]:
+        """签到；持久化会话若已失效，自动强制重新登录后重试一次。"""
+        try:
+            return self._checkin_once(mode)
+        except HDHavenError as err:
+            if err.status_code == 409 or "今日已签到" in str(err):
+                return self._already_checked_in(mode)
+            # 恢复的 Cookie/Token 可能已在站点侧过期（长期未访问/断网），重新登录后再试一次
+            try:
+                self.token = ""
+                self.login(force=True)
+            except Exception as login_err:  # noqa: BLE001
+                logger.debug(f"HDHaven 重新登录失败，保留原始错误：{login_err}")
+                raise err from None
+            try:
+                return self._checkin_once(mode)
+            except HDHavenError as retry_err:
+                if retry_err.status_code == 409 or "今日已签到" in str(retry_err):
+                    return self._already_checked_in(mode)
+                raise
+
+    def _already_checked_in(self, mode: str) -> Dict[str, Any]:
+        mode_text = "赌狗签到" if str(mode or "normal").strip().lower() == "gambler" else "普通签到"
+        return {
+            "success": True,
+            "already_checked_in": True,
+            "status": "今日已签到",
+            "message": f"今日已{mode_text}，无需重复签到",
+            "signin_points": 0,
+            "points_change": 0,
+            "signin_days": None,
+            "status_code": 200,
+        }
+
+    def _checkin_once(self, mode: str = "normal") -> Dict[str, Any]:
         is_gambler = str(mode or "normal").strip().lower() == "gambler"
         endpoint = "/api/account/checkin/gamble" if is_gambler else "/api/account/checkin"
         mode_text = "赌狗签到" if is_gambler else "普通签到"

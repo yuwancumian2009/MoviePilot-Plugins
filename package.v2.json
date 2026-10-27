@@ -97,13 +97,14 @@
     "name": "搜索渠道签到",
     "description": "给各个搜索渠道（Dian115 / HDHaven / HDHive / 聚影 / 蜗牛）每天自动签到领积分，每渠道独立开关与模式，已签成功的当天自动跳过，支持通知与历史记录。",
     "labels": "站点",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "icon": "https://raw.githubusercontent.com/yuwancumian2009/MoviePilot-Plugins/main/icons/searchchannelcheckin.png",
     "author": "yuwancumian2009",
     "level": 1,
     "release": true,
     "v3": false,
     "history": {
+      "v1.0.2": "HDHaven 会话失效时签到直接失败，现改为自动强制重新登录并重试一次。",
       "v1.0.1": "修复 HDHaven / 聚影 / 蜗牛 三个渠道实例化客户端时 proxy 重复传参，导致签到直接抛 TypeError（HDHaven 表现为「签到失败：got multiple values for keyword argument 'proxy'」）。",
       "v1.0.0": "从「网盘订阅助手」拆出的独立签到插件：支持 Dian115（普通/运气签到+幸运转盘）、HDHaven（普通/赌狗）、HDHive（普通/赌狗，WebAPI/OpenAPI 双通道）、聚影（含领奖池）、蜗牛；每渠道独立开关、模式与定时，已签到成功的渠道当天不再重复请求；签到结果可推送通知，页面提供概览/单渠道签到/历史记录。"
     }
