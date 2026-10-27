@@ -356,6 +356,8 @@ class HDHavenClient:
             # 恢复的 Cookie/Token 可能已在站点侧过期（长期未访问/断网），重新登录后再试一次
             try:
                 self.token = ""
+                # 清理站点侧已失效的 Cookie，否则 registration-config 拿不到 turnstile site key
+                self._session.cookies.clear()
                 self.login(force=True)
             except Exception as login_err:  # noqa: BLE001
                 logger.debug(f"HDHaven 重新登录失败，保留原始错误：{login_err}")
