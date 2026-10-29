@@ -210,7 +210,9 @@ check("媒体键缺失返回 None",
       DualVersionDownloader._media_key(types.SimpleNamespace()), None)
 
 cooldown_plugin = _plugin(enabled=True, cooldown_days=7)
-cooldown_plugin._history = {"tmdb:1": "2026-10-20T00:00:00"}
+cooldown_plugin._history = {
+    "tmdb:1": (datetime.now() - timedelta(days=1)).isoformat(timespec="seconds")
+}
 check("冷却期内命中", cooldown_plugin._in_cooldown("tmdb:1"), True)
 check("未记录不算冷却", cooldown_plugin._in_cooldown("tmdb:2"), False)
 check("冷却关闭后不拦截", _plugin(enabled=True, cooldown_days=0)._in_cooldown("tmdb:1"), False)
@@ -410,7 +412,7 @@ check("统计给出原因", "国语" in str(fs._last_filter_stats.get("reason"))
 fa = _plugin(enabled=True, any_words="国语,中字")
 check("任选关键词可放行", len(fa._filter_candidates([_cand("Movie 2024 1080p WEB-DL 中字 H264")])), 1)
 
-# 关键词匹配口径 + 宽松兜底（v1.5.0）
+# 关键词匹配口径 + 不再自动放宽（v1.8.0）
 kw = _plugin(enabled=True, require_words="国语,中字")
 cj = _cand("Movie 2023 1080p WEB-DL H264-GRP")
 cj.torrent_info.description = "国语中字 / 简繁字幕"
@@ -419,11 +421,12 @@ check("副标题里的国语中字能命中", len(kw._filter_candidates([cj])), 
 strict_zero = _plugin(enabled=True, require_words="国语,中字,粤语")
 c2 = _cand("Movie 2023 1080p WEB-DL H264-GRP")
 check("严格规则全滤", len(strict_zero._filter_candidates([c2])), 0)
-check("宽松兜底放行", len(strict_zero._filter_candidates([c2], strict_words=False)), 1)
+check("不再自动放宽：0 条就是 0 条", len(strict_zero._filter_candidates([c2])), 0)
+check("未补下原因可读", "国语" in strict_zero._filter_miss_reason(), True)
 
 ex_plugin = _plugin(enabled=True, exclude_words="CAM", require_words="国语,中字")
 c3 = _cand("Movie 2023 1080p CAM-GRP")
-check("宽松兜底仍尊重排除词", len(ex_plugin._filter_candidates([c3], strict_words=False)), 0)
+check("排除词硬性生效", len(ex_plugin._filter_candidates([c3])), 0)
 
 # 手动不限量 + 详情页按钮可点（v1.6.0）
 man = _plugin(enabled=True, library_enabled=True, library_names=["动画电影"], library_limit=3)

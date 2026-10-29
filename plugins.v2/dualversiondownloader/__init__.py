@@ -78,7 +78,7 @@ class DualVersionDownloader(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/movie.png"
     # 插件版本
-    plugin_version = "1.7.9"
+    plugin_version = "1.8.0"
     version = "1.4.0"
     # 插件作者
     plugin_author = "yuwancumian"
@@ -160,8 +160,6 @@ class DualVersionDownloader(_PluginBase):
         self._library_hashes: Dict[str, str] = {}
         self._refresh_scheduled_at: float = 0.0
         self._last_filter_stats: Dict[str, Any] = {}
-        self._relaxed_used: bool = False
-        self._strict_reason: str = ""
         self._scan_lock = threading.Lock()
         self._http_client: Optional[Any] = None
         self._category_names: Dict[str, str] = {}
@@ -1244,12 +1242,11 @@ class DualVersionDownloader(_PluginBase):
             return "skip", f"{head}：下载器中已有同一任务（{best_title}），跳过"
         self._library_mark(key)
         self._remember_library_hash(download_hash, tmdb_id)
-        relaxed_note = f"，严格规则未命中（{self._strict_reason}）已放宽" if self._relaxed_used else ""
         logger.info(
             f"双版本补全[库补齐]：{head} 已补下 {best_title}"
-            f"（{site_name}，{size_gb}GB，目录 {save_path or '默认'}，hash={download_hash}{relaxed_note}）"
+            f"（{site_name}，{size_gb}GB，目录 {save_path or '默认'}，hash={download_hash}）"
         )
-        return "ok", f"{head}：已补下 {best_title}（{size_gb}GB{relaxed_note}）"
+        return "ok", f"{head}：已补下 {best_title}（{size_gb}GB）"
 
     @staticmethod
     def _as_site_ids(raw: Any) -> List[int]:
@@ -2171,8 +2168,11 @@ class DualVersionDownloader(_PluginBase):
             save_path = self._resolve_save_path(download_hash, downloader)
             candidates = self._search_candidates(mediainfo)
             if not candidates:
-                logger.info(f"双版本补全：{title} 未找到可用的 {self._target_pix} 候选")
-                self._notify(f"{title} 未找到可用的 {self._target_pix} 版本", ok=False)
+                why = self._filter_miss_reason()
+                logger.info(
+                    f"双版本补全：{title} 没有符合筛选规则的 {self._target_pix} 候选（{why}），按规则不下"
+                )
+                self._notify(f"{title} 没有符合筛选规则的 {self._target_pix} 版本：{why}", ok=False)
                 return
 
             best = candidates[0]
@@ -2224,28 +2224,20 @@ class DualVersionDownloader(_PluginBase):
         contexts = SearchChain().process(mediainfo=mediainfo, sites=sites) or []
         logger.info(f"双版本补全：搜索到 {len(contexts)} 个候选资源")
         picked = self._filter_candidates(contexts)
-        self._relaxed_used = False
-        if not picked and (self._last_filter_stats or {}).get("pix_ok"):
-            # 严格规则一条都不剩时自动放宽关键词，按「确实有 1080p 就补下」处理
-            self._strict_reason = (self._last_filter_stats or {}).get("reason") or "关键词不符"
-            picked = self._filter_candidates(contexts, strict_words=False)
-            if picked:
-                self._relaxed_used = True
-                logger.info(
-                    f"双版本补全：严格匹配 0 条（{(self._last_filter_stats or {}).get('reason')}），"
-                    f"已放宽关键词规则，命中 {len(picked)} 条"
-                )
+        if not picked:
+            # 规则不符就不下：筛选条件是用户显式配置的，绝不自动放宽
+            logger.info(f"双版本补全：筛选后 0 条可用候选（{self._filter_miss_reason()}）")
         return picked
 
-    def _filter_candidates(self, contexts: List[Any], strict_words: bool = True) -> List[Any]:
+    def _filter_candidates(self, contexts: List[Any]) -> List[Any]:
         """从搜索结果里挑出目标分辨率的候选并排序（纯函数，便于自测）。
 
-        strict_words=False 表示宽松兜底：忽略「必须包含 / 任选关键词」，其余规则照旧。
+        所有规则都是硬性条件：只要有一条不满足就滤掉，绝不自动放宽、绝不降级补下。
         关键词在「标题 + 副标题 + MP 解析字段」里匹配，和 MP 订阅规则的口径一致。
         """
         excludes = self._words(self._exclude_words)
-        requires = self._words(self._require_words) if strict_words else []
-        anys = self._words(self._any_words) if strict_words else []
+        requires = self._words(self._require_words)
+        anys = self._words(self._any_words)
         picked: List[Any] = []
         stats = {"total": len(contexts), "pix_ok": 0, "rejected": 0, "reason": "", "examples": []}
         for item in contexts:
@@ -2295,6 +2287,24 @@ class DualVersionDownloader(_PluginBase):
             picked.sort(key=lambda c: (-(getattr(c.torrent_info, "seeders", 0) or 0),
                                        getattr(c.torrent_info, "size", 0) or 0))
         return picked
+
+    def _filter_miss_reason(self) -> str:
+        """把最近一次筛选统计翻译成人话，用于日志与通知。"""
+        stats = self._last_filter_stats or {}
+        total = stats.get("total", 0) or 0
+        pix_ok = stats.get("pix_ok", 0) or 0
+        if not total:
+            return "搜索没有返回任何候选"
+        if not pix_ok:
+            return f"共 {total} 个候选，但没有一个是 {self._target_pix}"
+        why = (
+            f"共 {total} 个候选，其中 {pix_ok} 个是 {self._target_pix}，"
+            f"但都不满足筛选规则（{stats.get('reason') or '规则不符'}）"
+        )
+        example = "；".join(stats.get("examples") or [])
+        if example:
+            why += f"，例如：{example}"
+        return why
 
     @staticmethod
     def _words(raw: Any) -> List[str]:
