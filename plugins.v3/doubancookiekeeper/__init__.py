@@ -172,7 +172,7 @@ class DoubanCookieKeeper(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png"
     # 插件版本
-    plugin_version = "2.0.0"
+    plugin_version = "2.1.0"
     # 插件作者
     plugin_author = "yuwancumian2009"
     # 作者主页
@@ -190,6 +190,7 @@ class DoubanCookieKeeper(_PluginBase):
     _use_cookiecloud: bool = True
     _keepalive: bool = True
     _auto_reload: bool = True
+    _auto_discover: bool = True
     _manual_cookie: str = ""
     _cron: str = DEFAULT_CRON
     _targets: str = DEFAULT_TARGETS
@@ -226,6 +227,7 @@ class DoubanCookieKeeper(_PluginBase):
         self._use_cookiecloud = bool(cfg.get("use_cookiecloud", True))
         self._keepalive = bool(cfg.get("keepalive", True))
         self._auto_reload = bool(cfg.get("auto_reload", True))
+        self._auto_discover = bool(cfg.get("auto_discover", True))
         self._manual_cookie = str(cfg.get("cookie") or "").strip()
         self._cron = str(cfg.get("cron") or DEFAULT_CRON).strip()
         self._targets = str(cfg.get("sync_targets") or DEFAULT_TARGETS).strip()
@@ -320,6 +322,10 @@ class DoubanCookieKeeper(_PluginBase):
                          "props": {"model": "auto_reload", "label": "同步后重载目标插件", "color": "primary",
                                    "hint": "让目标插件立即使用新 Cookie（不重载则要等 MP 重启）",
                                    "persistent-hint": True}}], md=3),
+                col(12, [{"component": "VSwitch",
+                         "props": {"model": "auto_discover", "label": "自动发现豆瓣插件", "color": "primary",
+                                   "hint": "除上面列出的目标外，所有配置项里带 cookie 的豆瓣插件都会被自动纳入同步",
+                                   "persistent-hint": True}}], md=3),
             ]),
             row([
                 col(12, [{"component": "VTextField",
@@ -380,6 +386,7 @@ class DoubanCookieKeeper(_PluginBase):
             "use_cookiecloud": self._use_cookiecloud,
             "keepalive": self._keepalive,
             "auto_reload": self._auto_reload,
+            "auto_discover": self._auto_discover,
             "cookie": self._manual_cookie,
             "cron": self._cron,
             "sync_targets": self._targets,
@@ -658,9 +665,8 @@ class DoubanCookieKeeper(_PluginBase):
             cookie = best.get("cookie") or ""
             changed = self._fp(cookie) != (state.get("cookie_fp") or "")
             self.save_data("cookie", cookie)
-            targets = state.get("targets") or {}
-            if changed or not targets:
-                targets = self._sync_targets(cookie)
+            # 每轮都尝试同步：配置被别的插件/UI 改写过时，只在 Cookie 变化时才推送会一直不同步
+            targets = self._sync_targets(cookie)
 
             merged = dict(state)
             merged.update({
@@ -1020,7 +1026,80 @@ class DoubanCookieKeeper(_PluginBase):
 
     # ------------------------------------------------------------------ 同步
     def _target_list(self) -> List[str]:
-        return [x.strip() for x in re.split(r"[,，\s]+", self._targets or "") if x.strip()]
+        pids: List[str] = []
+        for name in re.split(r"[,，\s]+", self._targets or ""):
+            name = name.strip()
+            if name and name not in pids:
+                pids.append(name)
+        if self._auto_discover:
+            for pid in self._discover_targets():
+                if pid not in pids:
+                    pids.append(pid)
+        return pids
+
+    def _discover_targets(self) -> List[str]:
+        """自动发现：所有配置项里带 cookie 的豆瓣插件实例（不含自己）。"""
+        found: List[str] = []
+        me = getattr(self, "id", "") or self.__class__.__name__
+        try:
+            from app.db.oper.plugininstance import PluginInstanceOper
+            for row in PluginInstanceOper().list_all():
+                pid = str(getattr(row, "instance_id", "") or "")
+                cfg = getattr(row, "config_data", None)
+                if not pid or pid == me or "douban" not in pid.lower():
+                    continue
+                if isinstance(cfg, dict) and "cookie" in cfg:
+                    found.append(pid)
+        except Exception as err:
+            logger.debug(f"豆瓣Cookie保活：自动发现目标插件失败：{err}")
+        return found
+
+    def _read_target_config(self, pid: str) -> Optional[Dict[str, Any]]:
+        """读取目标插件配置：MP v3 在 plugininstance.config_data，回退 v2 的 systemconfig。"""
+        try:
+            from app.db.oper.plugininstance import PluginInstanceOper
+            cfg = PluginInstanceOper().get_config_data(pid)
+            if isinstance(cfg, dict):
+                return cfg
+        except Exception:
+            pass
+        try:
+            legacy = self.systemconfig.get(f"plugin.{pid}")
+            if isinstance(legacy, dict):
+                return legacy
+        except Exception:
+            pass
+        return None
+
+    def _write_target_config(self, pid: str, cfg: Dict[str, Any]) -> str:
+        """写入目标插件配置，返回实际生效的存储位置。"""
+        try:
+            from app.db.oper.plugininstance import PluginInstanceOper
+            oper = PluginInstanceOper()
+            source = getattr(oper.get(pid), "source_plugin_id", None) or pid
+            oper.save_config_data(instance_id=pid, source_plugin_id=source, config_data=cfg)
+            return "plugininstance"
+        except Exception as err:
+            logger.debug(f"豆瓣Cookie保活：v3 配置写入不可用（{err}），回退 systemconfig")
+        self.systemconfig.set(f"plugin.{pid}", cfg)
+        return "systemconfig"
+
+    def _reload_target(self, pid: str) -> Tuple[bool, str]:
+        """重载目标插件实例树，让它立刻用上新 Cookie（v3 优先，回退 v2 入口）。"""
+        try:
+            from app.application.plugin.management import reload_plugin_runtime
+            reload_plugin_runtime(pid)
+            return True, ""
+        except Exception as err:
+            v3_error = f"{type(err).__name__}: {err}"
+        try:
+            from app.api.endpoints.plugin import register_plugin
+            from app.core.plugin import PluginManager
+            PluginManager().reload_plugin(pid)
+            register_plugin(pid)
+            return True, ""
+        except Exception as err:
+            return False, v3_error if not str(err) else f"{v3_error} / {type(err).__name__}: {err}"
 
     def _sync_targets(self, cookie: str) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -1032,8 +1111,7 @@ class DoubanCookieKeeper(_PluginBase):
         for pid in pids:
             item: Dict[str, Any] = {"synced": False, "reloaded": False, "at": _now(), "note": ""}
             try:
-                key = f"plugin.{pid}"
-                cfg = self.systemconfig.get(key)
+                cfg = self._read_target_config(pid)
                 if not isinstance(cfg, dict):
                     item["note"] = "未安装或没有配置"
                     out[pid] = item
@@ -1048,17 +1126,17 @@ class DoubanCookieKeeper(_PluginBase):
                     continue
                 new_cfg = dict(cfg)
                 new_cfg["cookie"] = cookie
-                self.systemconfig.set(key, new_cfg)
-                item.update(synced=True, note="已写入配置")
+                backend = self._write_target_config(pid, new_cfg)
+                back = self._read_target_config(pid) or {}
+                if str(back.get("cookie") or "").strip() != cookie.strip():
+                    item["note"] = f"写入后回读不一致（{backend}）"
+                    out[pid] = item
+                    continue
+                item.update(synced=True, note=f"已写入配置（{backend}）")
                 if self._auto_reload:
-                    try:
-                        from app.api.endpoints.plugin import register_plugin
-                        from app.core.plugin import PluginManager
-                        PluginManager().reload_plugin(pid)
-                        register_plugin(pid)
-                        item.update(reloaded=True, note="已写入配置并重载")
-                    except Exception as err:
-                        item["note"] = f"已写入配置，重载失败：{type(err).__name__}"
+                    ok, reason = self._reload_target(pid)
+                    item["reloaded"] = ok
+                    item["note"] = "已写入配置并重载" if ok else f"已写入配置，重载失败：{reason}"
                 logger.info(f"豆瓣Cookie保活：同步 Cookie 到 {pid}（{item['note']}）")
             except Exception as err:
                 item["note"] = f"失败：{type(err).__name__}: {err}"

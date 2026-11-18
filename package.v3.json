@@ -50,12 +50,13 @@
     "name": "豆瓣Cookie保活",
     "description": "豆瓣 Cookie 保活：进程层限速+403熔断避免把 CK 打死，dbcl2 到期倒计时预警",
     "labels": "工具",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "icon": "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png",
     "author": "yuwancumian2009",
     "level": 1,
     "release": true,
     "history": {
+      "v2.1.0": "修复 Cookie 注入失效：改写 V3 的 plugininstance.config_data（原写 systemconfig 的 plugin.* 无效），重载改用 reload_plugin_runtime；新增自动发现豆瓣插件与每轮强制同步。",
       "v2.0.2": "补齐剩余兼容导入：告警枚举改用 MessageType；插件重载改用 app.sdk.plugin.manager.PluginManager。",
       "v2.0.1": "迁移 V3 告警枚举 MessageType，消除兼容告警。",
       "v2.0.0": "MoviePilot V3 专用分支：导入迁移到 app.sdk 稳定出口，CookieCloud 改用 V3 实际模块路径。"
