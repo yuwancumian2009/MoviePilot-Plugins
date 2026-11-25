@@ -95,5 +95,19 @@
       "v1.7.9": "1. 修复：同一部影片被补下两份 1080p（补下前按 TMDB 现查媒体库，已有 1080p 直接跳过；未命中不再清掉在途账；在途窗口默认 24 小时）\n2. 库内「已有 1080 版本」的判定放宽：支持 1080i / 1920x1080 / 缺 p 的 …1080.WEB-DL 命名"
     },
     "system_version": ">=3.0.0"
+  },
+  "DoubanRankPlus2": {
+    "name": "豆瓣榜单Plus（自用）",
+    "description": "豆瓣榜单增强订阅：豆瓣/TMDB 双评分过滤、分类阈值、评价人数下限；适配 V3 订阅写入（media_source/media_id）",
+    "labels": "订阅",
+    "version": "1.6.0",
+    "icon": "https://raw.githubusercontent.com/xijin285/MoviePilot-Plugins/refs/heads/main/icons/douban.png",
+    "author": "yuwancumian",
+    "level": 1,
+    "release": true,
+    "history": {
+      "v1.6.0": "V3 专用：订阅写入改用 media_source/media_id，修复「订阅写入包含未知字段: tmdbid」导致条目全落「等待重试」；TMDB 按豆瓣 ID 匹配失败时回退文本识别。"
+    },
+    "system_version": ">=3.0.0"
   }
 }
