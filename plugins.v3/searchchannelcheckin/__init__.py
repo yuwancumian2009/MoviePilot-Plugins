@@ -141,7 +141,7 @@ class SearchChannelCheckin(_PluginBase):
     plugin_name = "搜索渠道签到"
     plugin_desc = "给 Dian115 / HDHaven / HDHive / 聚影 / 蜗牛 等搜索渠道每天自动签到。"
     plugin_icon = "mdi-calendar-check-outline"
-    plugin_version = "2.0.4"
+    plugin_version = "2.0.5"
     plugin_author = "yuwancumian2009"
     author_url = "https://github.com/yuwancumian2009"
     plugin_config_prefix = "searchchannelcheckin_"
@@ -906,6 +906,12 @@ class SearchChannelCheckin(_PluginBase):
         """发送签到结果通知，失败项单独列出。"""
         if not results:
             return
+        # 渠道没在签到结果里回报总积分时，退回用历史里该渠道最后一次记录的总积分
+        points_map: Dict[str, Any] = {}
+        try:
+            points_map = {str(i.get("key")): i.get("points") for i in self.overview() if isinstance(i, dict)}
+        except Exception as error:
+            logger.debug(f"搜索渠道签到：读取渠道总积分失败：{error}")
         lines = [f"【搜索渠道签到】{source} {self._last_run_at}"]
         for item in results:
             if item.get("already_checked_in"):
@@ -917,12 +923,24 @@ class SearchChannelCheckin(_PluginBase):
             else:
                 mark = "❌"
                 tail = item.get("message") or "签到失败"
+            # 明细括号：增减分 + 签到后总积分（都没有就不加括号）
+            details: List[str] = []
             change = item.get("points_change")
-            try:
-                change_text = f"（{int(change):+d}）" if change not in (None, "") else ""
-            except (TypeError, ValueError):
-                change_text = ""
-            lines.append(f"{mark} {item.get('channel_name')}：{tail}{change_text}")
+            if change not in (None, ""):
+                try:
+                    details.append(f"{int(change):+d}")
+                except (TypeError, ValueError):
+                    pass
+            after = item.get("points_after")
+            if after in (None, ""):
+                after = points_map.get(str(item.get("channel")))
+            if after not in (None, ""):
+                try:
+                    details.append(f"总积分 {int(after)}")
+                except (TypeError, ValueError):
+                    pass
+            detail_text = f"（{'，'.join(details)}）" if details else ""
+            lines.append(f"{mark} {item.get('channel_name')}：{tail}{detail_text}")
         try:
             self.post_message(
                 mtype=NotificationType.Plugin,
