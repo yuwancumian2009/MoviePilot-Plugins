@@ -133,6 +133,21 @@ def _as_str(value: Any, default: str = "") -> str:
         return default
     return str(value).strip()
 
+# 渠道常把状态直接写成英文（success/failed…），通知和页面里统一换成中文
+_STATUS_WORDS = {
+    "success": "签到成功", "succeeded": "签到成功", "succeed": "签到成功",
+    "ok": "签到成功", "true": "签到成功", "done": "签到成功",
+    "failed": "签到失败", "fail": "签到失败", "false": "签到失败", "error": "签到失败",
+}
+
+
+def _humanize_status(value: Any, default: str = "") -> str:
+    """渠道直出的英文状态词换成中文；其它文本（含附带说明）原样返回。"""
+    raw = _as_str(value, default)
+    if not raw:
+        return default
+    return _STATUS_WORDS.get(raw.lower().rstrip("!.。"), raw)
+
 
 class SearchChannelCheckin(_PluginBase):
     """搜索渠道签到插件。"""
@@ -141,7 +156,7 @@ class SearchChannelCheckin(_PluginBase):
     plugin_name = "搜索渠道签到"
     plugin_desc = "给 Dian115 / HDHaven / HDHive / 聚影 / 蜗牛 等搜索渠道每天自动签到。"
     plugin_icon = "mdi-calendar-check-outline"
-    plugin_version = "2.0.5"
+    plugin_version = "2.0.6"
     plugin_author = "yuwancumian2009"
     author_url = "https://github.com/yuwancumian2009"
     plugin_config_prefix = "searchchannelcheckin_"
@@ -850,8 +865,8 @@ class SearchChannelCheckin(_PluginBase):
         now = self._now()
         result = result or {}
         success = _as_bool(result.get("success"), False)
-        status_text = _as_str(result.get("status"), "")
-        message = _as_str(result.get("message"), "")
+        status_text = _humanize_status(result.get("status"), "")
+        message = _humanize_status(result.get("message"), "")
         already = _as_bool(result.get("already_checked_in"), False)
         if not already and success and ("已签到" in status_text or "已签到" in message):
             already = True
